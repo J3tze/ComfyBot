@@ -230,6 +230,47 @@ const STYLES = `
   50% { opacity: 0.6; }
 }
 
+/* ── Image attachment ── */
+.claude-img-attach-btn {
+  background: none; border: none; color: var(--fg-color, #ddd);
+  cursor: pointer; padding: 5px 7px; border-radius: 8px;
+  font-size: 15px; opacity: 0.35; transition: all 0.2s;
+  flex-shrink: 0;
+}
+.claude-img-attach-btn:hover { opacity: 0.8; background: rgba(255,255,255,0.05); }
+.claude-img-attach-btn.has-images { opacity: 0.6; color: var(--p-primary-color, #4af); }
+.claude-img-attach-btn.attached {
+  opacity: 1; color: #34d399;
+  background: rgba(52,211,153,0.08);
+}
+.claude-img-attach-btn:disabled { opacity: 0.15; cursor: not-allowed; }
+.claude-img-preview {
+  display: none; align-items: center; gap: 8px; padding: 4px 14px;
+  flex-shrink: 0;
+}
+.claude-img-preview.visible { display: flex; }
+.claude-img-preview img {
+  width: 48px; height: 48px; object-fit: cover; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.claude-img-preview .remove-img {
+  font-size: 11px; opacity: 0.5; cursor: pointer; background: none;
+  border: none; color: var(--fg-color, #ddd); padding: 4px 8px;
+  border-radius: 4px; transition: all 0.2s;
+}
+.claude-img-preview .remove-img:hover { opacity: 1; background: rgba(255,255,255,0.05); }
+
+/* Images in messages */
+.claude-msg-images {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
+}
+.claude-msg-images img {
+  max-width: 200px; max-height: 150px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1); cursor: pointer;
+  transition: transform 0.2s;
+}
+.claude-msg-images img:hover { transform: scale(1.02); }
+
 /* ── Input area ── */
 .claude-input-area {
   display: flex; flex-direction: column; gap: 8px;
@@ -289,6 +330,38 @@ const OPENROUTER_MODELS = [
   { id: "deepseek/deepseek-chat-v3-0324", name: "DeepSeek V3" },
   { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick" },
 ];
+
+/* ═══════════════════════════════════════════════════════════════════
+   PERSISTENT STATE (survives sidebar tab switches)
+   ═══════════════════════════════════════════════════════════════════ */
+
+const STATE = {
+  conversationHistory: [],  // [{role, content, images?, _appliedActions?}]
+  isStreaming: false,
+  streamingContent: "",
+  includeWorkflow: true,
+  settingsOpen: false,
+  currentProvider: "openrouter",
+  lastError: null,
+  selectedNode: null,
+  actionStore: {},          // actionId → actions array
+  lastOutputImages: [],     // [{filename, subfolder, type}] from last execution
+  pendingImages: [],        // [{base64, media_type, thumbnail_url}] to attach to next message
+};
+
+// Module-scoped DOM references (updated on each buildChatUI call)
+const DOM = {
+  messages: null,
+  streamingMsg: null,
+  sendBtn: null,
+  textarea: null,
+  errorBtn: null,
+  imgAttachBtn: null,
+  imgPreview: null,
+};
+
+let _listenersRegistered = false;
+let _nodeInterval = null;
 
 /* ═══════════════════════════════════════════════════════════════════
    GRAPH ACTION EXECUTOR
@@ -440,14 +513,6 @@ function renderMarkdown(text, options = {}) {
     </div>`;
   });
 
-  // Store action data for later retrieval
-  if (options.actionStore && actionBlocks.length) {
-    for (let i = 0; i < actionBlocks.length; i++) {
-      const id = text.match(new RegExp(`data-action-id="(action-[^"]+)"`))?.[1];
-      if (id) options.actionStore[id] = actionBlocks[i];
-    }
-  }
-
   return { html: text, actionBlocks };
 }
 
@@ -456,28 +521,99 @@ function escapeHtml(s) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   IMAGE HELPERS
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function fetchImageAsBase64(imgRef) {
+  const url = `/view?filename=${encodeURIComponent(imgRef.filename)}&subfolder=${encodeURIComponent(imgRef.subfolder || "")}&type=${imgRef.type || "output"}`;
+  const res = await fetch(url);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      base64: reader.result.split(",")[1],
+      media_type: blob.type || "image/png",
+      thumbnail_url: url,
+    });
+    reader.onerror = () => reject(new Error("Failed to read image"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function updateImagePreview() {
+  if (!DOM.imgPreview || !DOM.imgAttachBtn) return;
+  if (STATE.pendingImages.length > 0) {
+    DOM.imgPreview.innerHTML = "";
+    STATE.pendingImages.forEach((img) => {
+      const imgEl = document.createElement("img");
+      imgEl.src = img.thumbnail_url || `data:${img.media_type};base64,${img.base64}`;
+      DOM.imgPreview.appendChild(imgEl);
+    });
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "remove-img";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => {
+      STATE.pendingImages = [];
+      updateImagePreview();
+    });
+    DOM.imgPreview.appendChild(removeBtn);
+    DOM.imgPreview.classList.add("visible");
+    DOM.imgAttachBtn.classList.add("attached");
+    DOM.imgAttachBtn.classList.remove("has-images");
+  } else {
+    DOM.imgPreview.classList.remove("visible");
+    DOM.imgPreview.innerHTML = "";
+    DOM.imgAttachBtn.classList.remove("attached");
+    if (STATE.lastOutputImages.length > 0) {
+      DOM.imgAttachBtn.classList.add("has-images");
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   GLOBAL EVENT LISTENERS (registered once)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function registerGlobalListeners() {
+  if (_listenersRegistered) return;
+  _listenersRegistered = true;
+
+  api.addEventListener("execution_error", ({ detail }) => {
+    STATE.lastError = detail;
+    if (DOM.errorBtn) DOM.errorBtn.style.display = "";
+  });
+
+  api.addEventListener("executed", ({ detail }) => {
+    if (detail?.output?.images) {
+      STATE.lastOutputImages = detail.output.images.map((img) => ({
+        filename: img.filename,
+        subfolder: img.subfolder || "",
+        type: img.type || "output",
+      }));
+      if (DOM.imgAttachBtn && STATE.pendingImages.length === 0) {
+        DOM.imgAttachBtn.classList.add("has-images");
+        DOM.imgAttachBtn.title = `Attach last output (${STATE.lastOutputImages.length} image${STATE.lastOutputImages.length > 1 ? "s" : ""})`;
+      }
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    CHAT UI
    ═══════════════════════════════════════════════════════════════════ */
 
 function buildChatUI(el) {
+  el.innerHTML = "";
+  if (_nodeInterval) { clearInterval(_nodeInterval); _nodeInterval = null; }
+
   const root = document.createElement("div");
   root.className = "claude-root";
-
-  // ── State
-  let conversationHistory = [];
-  let isStreaming = false;
-  let includeWorkflow = true;
-  let settingsOpen = false;
-  let currentProvider = "openrouter";
-  let lastError = null;
-  let selectedNode = null;
-  const actionStore = {}; // id → actions array
 
   // ── Header
   const header = document.createElement("div");
   header.className = "claude-header";
   header.innerHTML = `
-    <span class="claude-header-title">AI Assistant</span>
+    <span class="claude-header-title">ComfyBot</span>
     <button class="claude-header-btn" data-action="settings" title="Settings"><i class="pi pi-cog"></i></button>
     <button class="claude-header-btn" data-action="clear" title="Clear chat"><i class="pi pi-trash"></i></button>
   `;
@@ -529,7 +665,6 @@ function buildChatUI(el) {
     <div class="claude-empty-icon"><i class="pi pi-comments"></i></div>
     <div>Ask about your<br>ComfyUI workflow</div>
   `;
-  messages.appendChild(emptyState);
 
   // ── Quick actions
   const quickActions = document.createElement("div");
@@ -538,18 +673,24 @@ function buildChatUI(el) {
     <button class="claude-quick-btn" data-prompt="Analyze this workflow: explain what it does step by step, and identify any potential issues.">Analyze</button>
     <button class="claude-quick-btn" data-prompt="Suggest optimizations for this workflow to improve quality, speed, or both. Be specific about which nodes/settings to change.">Optimize</button>
     <button class="claude-quick-btn" data-prompt="improve-prompts">Improve Prompts</button>
+    <button class="claude-quick-btn" data-prompt="analyze-output">Analyze Output</button>
     <button class="claude-quick-btn error-btn" data-prompt="fix-error" style="display:none">Fix Error</button>
   `;
+
+  // ── Image preview area
+  const imgPreview = document.createElement("div");
+  imgPreview.className = "claude-img-preview";
 
   // ── Input area
   const inputArea = document.createElement("div");
   inputArea.className = "claude-input-area";
   inputArea.innerHTML = `
     <label class="claude-workflow-toggle">
-      <input type="checkbox" checked> Include current workflow as context
+      <input type="checkbox" ${STATE.includeWorkflow ? "checked" : ""}> Include current workflow as context
     </label>
     <div class="claude-input-row">
       <textarea class="claude-textarea" placeholder="Ask about your workflow..." rows="1"></textarea>
+      <button class="claude-img-attach-btn" title="Attach last output image"><i class="pi pi-image"></i></button>
       <button class="claude-send-btn" title="Send"><i class="pi pi-send"></i></button>
     </div>
   `;
@@ -560,6 +701,7 @@ function buildChatUI(el) {
   root.appendChild(nodeCtx);
   root.appendChild(messages);
   root.appendChild(quickActions);
+  root.appendChild(imgPreview);
   root.appendChild(inputArea);
   el.appendChild(root);
 
@@ -574,8 +716,17 @@ function buildChatUI(el) {
   const statusEl = settings.querySelector(".claude-settings-status");
   const textarea = inputArea.querySelector(".claude-textarea");
   const sendBtn = inputArea.querySelector(".claude-send-btn");
+  const imgAttachBtn = inputArea.querySelector(".claude-img-attach-btn");
   const workflowCheckbox = inputArea.querySelector(".claude-workflow-toggle input");
   const errorBtn = quickActions.querySelector('[data-prompt="fix-error"]');
+
+  // Update module-scoped DOM refs
+  DOM.messages = messages;
+  DOM.sendBtn = sendBtn;
+  DOM.textarea = textarea;
+  DOM.errorBtn = errorBtn;
+  DOM.imgAttachBtn = imgAttachBtn;
+  DOM.imgPreview = imgPreview;
 
   // ── Model dropdown
   function updateModelList(provider, currentModel) {
@@ -585,7 +736,7 @@ function buildChatUI(el) {
   }
 
   function updateProviderUI(provider) {
-    currentProvider = provider;
+    STATE.currentProvider = provider;
     openrouterKeyRow.classList.toggle("hidden", provider !== "openrouter");
     anthropicKeyRow.classList.toggle("hidden", provider !== "anthropic");
     updateModelList(provider, modelSelect.value);
@@ -598,14 +749,14 @@ function buildChatUI(el) {
     try {
       const res = await fetch("/claude-assistant/config");
       const cfg = await res.json();
-      currentProvider = cfg.provider || "openrouter";
-      providerSelect.value = currentProvider;
-      updateProviderUI(currentProvider);
+      STATE.currentProvider = cfg.provider || "openrouter";
+      providerSelect.value = STATE.currentProvider;
+      updateProviderUI(STATE.currentProvider);
       if (cfg.openrouter_key_preview) openrouterKeyInput.placeholder = `Current: ${cfg.openrouter_key_preview}`;
       if (cfg.anthropic_key_preview) anthropicKeyInput.placeholder = `Current: ${cfg.anthropic_key_preview}`;
-      if (cfg.model) updateModelList(currentProvider, cfg.model);
+      if (cfg.model) updateModelList(STATE.currentProvider, cfg.model);
       if (!cfg.has_api_key) {
-        settingsOpen = true;
+        STATE.settingsOpen = true;
         settings.classList.add("open");
         header.querySelector('[data-action="settings"]').classList.add("active");
         statusEl.textContent = "Please configure your API key";
@@ -613,17 +764,27 @@ function buildChatUI(el) {
     } catch {}
   }
 
+  // ── Restore UI state
+  if (STATE.settingsOpen) {
+    settings.classList.add("open");
+    header.querySelector('[data-action="settings"]').classList.add("active");
+  }
+  if (STATE.lastError) errorBtn.style.display = "";
+  if (STATE.lastOutputImages.length > 0) imgAttachBtn.classList.add("has-images");
+  updateImagePreview();
+
   // ── Settings events
   providerSelect.addEventListener("change", () => updateProviderUI(providerSelect.value));
 
   header.querySelector('[data-action="settings"]').addEventListener("click", () => {
-    settingsOpen = !settingsOpen;
-    settings.classList.toggle("open", settingsOpen);
-    header.querySelector('[data-action="settings"]').classList.toggle("active", settingsOpen);
+    STATE.settingsOpen = !STATE.settingsOpen;
+    settings.classList.toggle("open", STATE.settingsOpen);
+    header.querySelector('[data-action="settings"]').classList.toggle("active", STATE.settingsOpen);
   });
 
   header.querySelector('[data-action="clear"]').addEventListener("click", () => {
-    conversationHistory = [];
+    STATE.conversationHistory = [];
+    STATE.actionStore = {};
     messages.innerHTML = "";
     messages.appendChild(emptyState);
   });
@@ -643,7 +804,7 @@ function buildChatUI(el) {
     } catch { statusEl.textContent = "Error saving"; }
   });
 
-  workflowCheckbox.addEventListener("change", () => { includeWorkflow = workflowCheckbox.checked; });
+  workflowCheckbox.addEventListener("change", () => { STATE.includeWorkflow = workflowCheckbox.checked; });
 
   // ── Textarea auto-resize
   textarea.addEventListener("input", () => {
@@ -652,17 +813,35 @@ function buildChatUI(el) {
   });
 
   // ── Message helpers
-  function addMessage(role, content) {
+  function addMessageToDOM(role, content, images) {
     if (emptyState.parentNode) emptyState.remove();
     const msg = document.createElement("div");
     msg.className = `claude-msg ${role}`;
     if (role === "assistant") {
-      const { html } = renderMarkdown(content, { actionStore });
+      const { html, actionBlocks } = renderMarkdown(content, { actionStore: STATE.actionStore });
       msg.innerHTML = html;
+      // Store action blocks by card data-action-id
+      const cards = msg.querySelectorAll(".claude-action-card");
+      cards.forEach((card, i) => {
+        if (actionBlocks[i]) STATE.actionStore[card.dataset.actionId] = actionBlocks[i];
+      });
     } else if (role === "error") {
       msg.textContent = content;
     } else {
-      msg.textContent = content;
+      // User message with optional images
+      if (images && images.length) {
+        const imgContainer = document.createElement("div");
+        imgContainer.className = "claude-msg-images";
+        images.forEach((img) => {
+          const imgEl = document.createElement("img");
+          imgEl.src = img.thumbnail_url || `data:${img.media_type};base64,${img.base64}`;
+          imgContainer.appendChild(imgEl);
+        });
+        msg.appendChild(imgContainer);
+      }
+      const textEl = document.createElement("span");
+      textEl.textContent = content;
+      msg.appendChild(textEl);
     }
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
@@ -679,37 +858,47 @@ function buildChatUI(el) {
     return el;
   }
 
+  // ── Rebuild messages from persisted history
+  if (STATE.conversationHistory.length > 0) {
+    emptyState.remove();
+    for (let i = 0; i < STATE.conversationHistory.length; i++) {
+      const entry = STATE.conversationHistory[i];
+      const msgEl = addMessageToDOM(entry.role, entry.content, entry.images);
+      msgEl.dataset.historyIdx = String(i);
+      // Restore applied action states
+      if (entry.role === "assistant" && entry._appliedActions) {
+        const cards = msgEl.querySelectorAll(".claude-action-card");
+        cards.forEach((card, j) => {
+          if (entry._appliedActions[j]) {
+            const btn = card.querySelector(".claude-apply-btn");
+            if (btn) {
+              btn.disabled = true;
+              btn.classList.add("applied");
+              btn.textContent = "Applied!";
+            }
+          }
+        });
+      }
+    }
+  } else {
+    messages.appendChild(emptyState);
+  }
+
+  // If streaming was in progress, show partial content
+  if (STATE.isStreaming && STATE.streamingContent) {
+    DOM.streamingMsg = addMessageToDOM("assistant", STATE.streamingContent);
+    addTypingIndicator();
+  }
+
   // ── Action card click handler (delegated)
   messages.addEventListener("click", (e) => {
     const btn = e.target.closest(".claude-apply-btn");
     if (!btn || btn.disabled) return;
 
-    const id = btn.dataset.actionId;
-    // Find the action data — search through all action cards
     const card = btn.closest(".claude-action-card");
     const resultEl = card.querySelector(".claude-apply-result");
-
-    // Find actions by scanning actionStore or re-parsing
-    let actions = null;
-    // Try to find by ID in the DOM's data attribute
-    for (const [key, val] of Object.entries(actionStore)) {
-      if (card.dataset.actionId === key || id.includes(key.split("-").pop())) {
-        actions = val;
-        break;
-      }
-    }
-
-    // Fallback: re-parse from the list items
-    if (!actions) {
-      // Use the stored data from the card's data-action-id
-      const allCards = messages.querySelectorAll(".claude-action-card");
-      allCards.forEach((c) => {
-        if (c.contains(btn)) {
-          const cid = c.dataset.actionId;
-          if (actionStore[cid]) actions = actionStore[cid];
-        }
-      });
-    }
+    const id = card.dataset.actionId;
+    const actions = STATE.actionStore[id];
 
     if (!actions) {
       resultEl.textContent = "Error: Could not find action data";
@@ -721,8 +910,41 @@ function buildChatUI(el) {
     btn.classList.add("applied");
     btn.textContent = "Applied!";
 
-    const summary = results.map((r) => `${r.ok ? "✓" : "✗"} ${r.msg}`).join("\n");
+    // Track applied state in history
+    const msgEl = card.closest(".claude-msg.assistant");
+    const histIdx = parseInt(msgEl?.dataset.historyIdx);
+    if (!isNaN(histIdx) && STATE.conversationHistory[histIdx]) {
+      const entry = STATE.conversationHistory[histIdx];
+      if (!entry._appliedActions) entry._appliedActions = [];
+      const cardIdx = Array.from(msgEl.querySelectorAll(".claude-action-card")).indexOf(card);
+      if (cardIdx >= 0) entry._appliedActions[cardIdx] = true;
+    }
+
+    const summary = results.map((r) => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
     resultEl.textContent = summary;
+  });
+
+  // ── Image attach button
+  imgAttachBtn.addEventListener("click", async () => {
+    if (STATE.pendingImages.length > 0) {
+      STATE.pendingImages = [];
+      updateImagePreview();
+      return;
+    }
+    if (STATE.lastOutputImages.length === 0) return;
+    imgAttachBtn.disabled = true;
+    try {
+      const images = [];
+      for (const imgRef of STATE.lastOutputImages.slice(0, 4)) {
+        images.push(await fetchImageAsBase64(imgRef));
+      }
+      STATE.pendingImages = images;
+      updateImagePreview();
+    } catch {
+      // Silently fail
+    } finally {
+      imgAttachBtn.disabled = false;
+    }
   });
 
   // ── Workflow helpers
@@ -745,90 +967,121 @@ function buildChatUI(el) {
   }
 
   // ── Node context tracking
-  let nodeCheckInterval = setInterval(() => {
+  _nodeInterval = setInterval(() => {
     try {
       const sel = app.canvas?.selected_nodes;
       if (!sel) return;
       const ids = Object.keys(sel);
       if (ids.length === 1) {
         const node = sel[ids[0]];
-        if (node !== selectedNode) {
-          selectedNode = node;
+        if (node !== STATE.selectedNode) {
+          STATE.selectedNode = node;
           const label = nodeCtx.querySelector(".claude-node-ctx-label");
           const typeName = node.type || node.comfyClass || "Unknown";
           label.innerHTML = `Selected: <strong>${typeName} #${node.id}</strong>`;
           nodeCtx.classList.add("visible");
         }
-      } else if (ids.length !== 1 && selectedNode) {
-        selectedNode = null;
+      } else if (ids.length !== 1 && STATE.selectedNode) {
+        STATE.selectedNode = null;
         nodeCtx.classList.remove("visible");
       }
     } catch {}
   }, 500);
 
   nodeCtx.querySelector(".claude-node-ctx-btn").addEventListener("click", () => {
-    if (!selectedNode) return;
-    const typeName = selectedNode.type || selectedNode.comfyClass || "Unknown";
-    const widgets = selectedNode.widgets
+    if (!STATE.selectedNode) return;
+    const typeName = STATE.selectedNode.type || STATE.selectedNode.comfyClass || "Unknown";
+    const widgets = STATE.selectedNode.widgets
       ?.map((w) => `  ${w.name}: ${JSON.stringify(w.value)}`)
       .join("\n") || "  (none)";
-    const inputs = selectedNode.inputs
+    const inputs = STATE.selectedNode.inputs
       ?.map((inp, i) => `  [${i}] ${inp.name} (${inp.type})${inp.link != null ? " - connected" : ""}`)
       .join("\n") || "  (none)";
-    const outputs = selectedNode.outputs
+    const outputs = STATE.selectedNode.outputs
       ?.map((out, i) => `  [${i}] ${out.name} (${out.type})`)
       .join("\n") || "  (none)";
 
-    const prompt = `Tell me about this node and what it does:\n\nType: ${typeName}\nID: #${selectedNode.id}\nTitle: ${selectedNode.title || typeName}\n\nWidgets:\n${widgets}\n\nInputs:\n${inputs}\n\nOutputs:\n${outputs}`;
+    const prompt = `Tell me about this node and what it does:\n\nType: ${typeName}\nID: #${STATE.selectedNode.id}\nTitle: ${STATE.selectedNode.title || typeName}\n\nWidgets:\n${widgets}\n\nInputs:\n${inputs}\n\nOutputs:\n${outputs}`;
     sendMessageText(prompt);
   });
 
-  // ── Error capture
-  api.addEventListener("execution_error", ({ detail }) => {
-    lastError = detail;
-    errorBtn.style.display = "";
-  });
-
   // ── Quick actions
-  quickActions.addEventListener("click", (e) => {
+  quickActions.addEventListener("click", async (e) => {
     const btn = e.target.closest(".claude-quick-btn");
-    if (!btn || isStreaming) return;
+    if (!btn || STATE.isStreaming) return;
     let prompt = btn.dataset.prompt;
 
     if (prompt === "improve-prompts") {
       const prompts = getPromptsFromWorkflow();
       if (!prompts.length) {
-        addMessage("error", "No text prompts found in the current workflow.");
+        addMessageToDOM("error", "No text prompts found in the current workflow.");
         return;
       }
       const promptList = prompts.map((p) => `${p.title} (#${p.id}):\n"${p.text}"`).join("\n\n");
       prompt = `Here are the text prompts in my workflow. Suggest improvements for better image quality and specificity:\n\n${promptList}`;
     } else if (prompt === "fix-error") {
-      if (!lastError) return;
-      const errInfo = `Node: ${lastError.node_type || "?"} (#${lastError.node_id || "?"})\nError: ${lastError.exception_message || lastError.exception_type || "Unknown error"}\nTraceback:\n${lastError.traceback?.slice(0, 2000) || "N/A"}`;
+      if (!STATE.lastError) return;
+      const errInfo = `Node: ${STATE.lastError.node_type || "?"} (#${STATE.lastError.node_id || "?"})\nError: ${STATE.lastError.exception_message || STATE.lastError.exception_type || "Unknown error"}\nTraceback:\n${STATE.lastError.traceback?.slice(0, 2000) || "N/A"}`;
       prompt = `My workflow failed with this error. Help me diagnose and fix it:\n\n${errInfo}`;
       errorBtn.style.display = "none";
-      lastError = null;
+      STATE.lastError = null;
+    } else if (prompt === "analyze-output") {
+      if (STATE.lastOutputImages.length === 0) {
+        addMessageToDOM("error", "No output images available. Run a workflow first.");
+        return;
+      }
+      try {
+        const images = [];
+        for (const imgRef of STATE.lastOutputImages.slice(0, 4)) {
+          images.push(await fetchImageAsBase64(imgRef));
+        }
+        sendMessageText(
+          "Analyze this generated image. Comment on the composition, quality, any artifacts or issues, and suggest improvements to the workflow or prompts.",
+          images
+        );
+      } catch (err) {
+        addMessageToDOM("error", `Failed to fetch output images: ${err.message}`);
+      }
+      return;
     }
 
     sendMessageText(prompt);
   });
 
   // ── Send message
-  async function sendMessageText(text) {
-    if (!text || isStreaming) return;
-    isStreaming = true;
+  async function sendMessageText(text, images) {
+    if (!text || STATE.isStreaming) return;
+    STATE.isStreaming = true;
     sendBtn.disabled = true;
     textarea.value = "";
     textarea.style.height = "auto";
 
-    addMessage("user", text);
-    conversationHistory.push({ role: "user", content: text });
+    // Collect attached images
+    const attachedImages = images || (STATE.pendingImages.length > 0 ? [...STATE.pendingImages] : undefined);
+    STATE.pendingImages = [];
+    updateImagePreview();
+
+    addMessageToDOM("user", text, attachedImages);
+    const historyEntry = { role: "user", content: text };
+    if (attachedImages) historyEntry.images = attachedImages;
+    STATE.conversationHistory.push(historyEntry);
+
     const typingEl = addTypingIndicator();
 
     try {
-      const body = { messages: conversationHistory };
-      if (includeWorkflow) {
+      const body = {
+        messages: STATE.conversationHistory.map((m) => {
+          const msg = { role: m.role, content: m.content };
+          if (m.images) {
+            msg.images = m.images.map((img) => ({
+              base64: img.base64,
+              media_type: img.media_type,
+            }));
+          }
+          return msg;
+        }),
+      };
+      if (STATE.includeWorkflow) {
         const wf = getWorkflow();
         if (wf) body.workflow = wf;
       }
@@ -841,16 +1094,17 @@ function buildChatUI(el) {
 
       if (!res.ok) {
         const err = await res.json();
-        typingEl.remove();
-        addMessage("error", err.error || `HTTP ${res.status}`);
-        conversationHistory.pop();
-        isStreaming = false;
-        sendBtn.disabled = false;
+        if (typingEl.isConnected) typingEl.remove();
+        addMessageToDOM("error", err.error || `HTTP ${res.status}`);
+        STATE.conversationHistory.pop();
+        STATE.isStreaming = false;
+        STATE.streamingContent = "";
+        if (DOM.sendBtn) DOM.sendBtn.disabled = false;
         return;
       }
 
-      typingEl.remove();
-      const msgEl = addMessage("assistant", "");
+      if (typingEl.isConnected) typingEl.remove();
+      DOM.streamingMsg = addMessageToDOM("assistant", "");
       let fullResponse = "";
 
       const reader = res.body.getReader();
@@ -870,13 +1124,17 @@ function buildChatUI(el) {
             const data = JSON.parse(line.slice(6));
             if (data.type === "text_delta") {
               fullResponse += data.text;
-              // During streaming, render without interactive action cards
-              const { html } = renderMarkdown(fullResponse);
-              msgEl.innerHTML = html;
-              messages.scrollTop = messages.scrollHeight;
+              STATE.streamingContent = fullResponse;
+              // Update DOM if still connected
+              if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
+                const { html } = renderMarkdown(fullResponse);
+                DOM.streamingMsg.innerHTML = html;
+                if (DOM.messages) DOM.messages.scrollTop = DOM.messages.scrollHeight;
+              }
             } else if (data.type === "error") {
-              msgEl.remove();
-              addMessage("error", data.error);
+              if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
+              DOM.streamingMsg = null;
+              addMessageToDOM("error", data.error);
               fullResponse = "";
             }
           } catch {}
@@ -885,28 +1143,35 @@ function buildChatUI(el) {
 
       // Final render with interactive action cards
       if (fullResponse) {
-        const { html, actionBlocks } = renderMarkdown(fullResponse, { actionStore });
-        msgEl.innerHTML = html;
+        const histIdx = STATE.conversationHistory.length;
+        STATE.conversationHistory.push({ role: "assistant", content: fullResponse });
 
-        // Store action blocks by card ID
-        const cards = msgEl.querySelectorAll(".claude-action-card");
-        cards.forEach((card, i) => {
-          if (actionBlocks[i]) {
-            actionStore[card.dataset.actionId] = actionBlocks[i];
-          }
-        });
+        if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
+          const { html, actionBlocks } = renderMarkdown(fullResponse, { actionStore: STATE.actionStore });
+          DOM.streamingMsg.innerHTML = html;
+          DOM.streamingMsg.dataset.historyIdx = String(histIdx);
 
-        messages.scrollTop = messages.scrollHeight;
-        conversationHistory.push({ role: "assistant", content: fullResponse });
+          // Store action blocks by card ID
+          const cards = DOM.streamingMsg.querySelectorAll(".claude-action-card");
+          cards.forEach((card, i) => {
+            if (actionBlocks[i]) {
+              STATE.actionStore[card.dataset.actionId] = actionBlocks[i];
+            }
+          });
+
+          if (DOM.messages) DOM.messages.scrollTop = DOM.messages.scrollHeight;
+        }
       }
     } catch (err) {
-      typingEl.remove?.();
-      addMessage("error", `Connection error: ${err.message}`);
+      if (typingEl.isConnected) typingEl.remove();
+      addMessageToDOM("error", `Connection error: ${err.message}`);
     }
 
-    isStreaming = false;
-    sendBtn.disabled = false;
-    textarea.focus();
+    STATE.isStreaming = false;
+    STATE.streamingContent = "";
+    DOM.streamingMsg = null;
+    if (DOM.sendBtn) DOM.sendBtn.disabled = false;
+    if (DOM.textarea && DOM.textarea.isConnected) DOM.textarea.focus();
   }
 
   // ── Input events
@@ -917,6 +1182,14 @@ function buildChatUI(el) {
       sendMessageText(textarea.value.trim());
     }
   });
+
+  // ── Disable send if streaming in progress (from previous tab session)
+  if (STATE.isStreaming) {
+    sendBtn.disabled = true;
+  }
+
+  // ── Register global listeners
+  registerGlobalListeners();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -924,7 +1197,7 @@ function buildChatUI(el) {
    ═══════════════════════════════════════════════════════════════════ */
 
 app.registerExtension({
-  name: "comfyui.claude.assistant",
+  name: "comfyui.comfybot",
 
   async setup() {
     const style = document.createElement("style");
@@ -932,10 +1205,10 @@ app.registerExtension({
     document.head.appendChild(style);
 
     app.extensionManager.registerSidebarTab({
-      id: "claude-assistant",
+      id: "comfybot",
       icon: "pi pi-comments",
-      title: "AI Assistant",
-      tooltip: "AI Assistant (Claude / OpenRouter)",
+      title: "ComfyBot",
+      tooltip: "ComfyBot - AI Assistant",
       type: "custom",
       render: (el) => buildChatUI(el),
     });

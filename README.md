@@ -1,6 +1,6 @@
-# ComfyUI AI Assistant
+# ComfyBot - AI Assistant for ComfyUI
 
-An AI-powered sidebar extension for ComfyUI that lets you chat with Claude (or other models via OpenRouter) directly inside your workflow editor. Ask questions, get workflow advice, and let the AI modify your graph.
+An AI-powered sidebar extension for ComfyUI that lets you chat with Claude (or other models via OpenRouter) directly inside your workflow editor. Ask questions, get workflow advice, analyze outputs, and let the AI modify your graph.
 
 ![ComfyUI Sidebar](https://img.shields.io/badge/ComfyUI-Sidebar_Extension-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -8,7 +8,10 @@ An AI-powered sidebar extension for ComfyUI that lets you chat with Claude (or o
 ## Features
 
 ### Chat with AI about your workflow
-Send your current workflow as context and get intelligent advice about your node setup, connections, and parameters.
+Send your current workflow as context and get intelligent advice about your node setup, connections, and parameters. The AI automatically knows your installed checkpoints, LoRAs, VAEs, and other models.
+
+### Vision - Analyze Generated Images
+Send your generated outputs to the AI for analysis. Get feedback on composition, quality, artifacts, and specific suggestions for improving your workflow and prompts. Click "Analyze Output" or attach images manually.
 
 ### Graph Manipulation
 Ask the AI to modify your workflow directly. It outputs structured actions that you can review and apply with one click:
@@ -21,6 +24,7 @@ One-click preset prompts above the chat input:
 - **Analyze** - Get a step-by-step explanation of your workflow
 - **Optimize** - Suggestions for improving quality or speed
 - **Improve Prompts** - AI-powered prompt engineering for your CLIPTextEncode nodes
+- **Analyze Output** - Send the last generated image to the AI for feedback
 - **Fix Error** - Appears automatically when an execution error occurs, sends the full traceback to the AI
 
 ### Node Context
@@ -28,6 +32,9 @@ Click any node on the canvas and a context bar appears in the sidebar. Hit "Ask 
 
 ### Error Diagnosis
 Automatically captures ComfyUI execution errors. When something fails, click "Fix Error" to send the full error details + your workflow to the AI for diagnosis.
+
+### Installed Models Awareness
+The AI automatically knows about your installed checkpoints, LoRAs, VAEs, upscale models, ControlNets, and embeddings. It will only suggest models you actually have installed.
 
 ### Multi-Provider Support
 - **OpenRouter** (default) - Access Claude, GPT-4o, Gemini, DeepSeek, Llama, and more with one API key
@@ -100,8 +107,8 @@ Your API key, selected model, and provider preference all persist automatically.
 
 ## How It Works
 
-- **Frontend** (`web/extension.js`): Registers a sidebar tab via ComfyUI's extension API. Handles the chat UI, streaming responses, graph manipulation, and node context tracking.
-- **Backend** (`server.py`): Registers API routes on ComfyUI's aiohttp server. Proxies requests to OpenRouter or Anthropic with streaming SSE responses.
+- **Frontend** (`web/extension.js`): Registers a sidebar tab via ComfyUI's extension API. Handles the chat UI, streaming responses, graph manipulation, vision, and node context tracking.
+- **Backend** (`server.py`): Registers API routes on ComfyUI's aiohttp server. Proxies requests to OpenRouter or Anthropic with streaming SSE responses. Provides installed model lists and handles image message conversion.
 - **No custom nodes** - this is a pure sidebar extension.
 
 ## License

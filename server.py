@@ -25,7 +25,8 @@ CONFIG_FILE = _config_path()
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
-SYSTEM_PROMPT = """You are an AI assistant embedded in ComfyUI as a sidebar helper. \
+SYSTEM_PROMPT = """\
+You are ComfyBot, an AI assistant embedded in ComfyUI as a sidebar helper. \
 ComfyUI is a node-based visual programming interface for Stable Diffusion and other generative AI models.
 
 Your role is to help users:
@@ -34,6 +35,7 @@ Your role is to help users:
 3. Help with prompt engineering for image generation
 4. Explain ComfyUI concepts and node types
 5. Troubleshoot workflow and execution errors
+6. Analyze generated images and suggest improvements
 
 ## Workflow JSON format
 When the user shares their workflow, you receive it as JSON. Each node has:
@@ -85,6 +87,17 @@ When helping with Stable Diffusion prompts:
 - Be specific about composition, lighting, style, and subject details
 - For Pony/Animagine models, include score tags: "score_9, score_8_up, score_7_up"
 
+## Vision
+When the user sends generated images, analyze them carefully. Comment on:
+- Overall quality and composition
+- Artifacts, distortions, or issues (hands, faces, text, etc.)
+- How well the image matches the prompts in the workflow
+- Specific suggestions for improving the workflow, prompts, or settings
+
+## Installed models
+When suggesting LoRAs, checkpoints, or other models, ONLY suggest ones from the user's installed \
+models list (provided below). Do not suggest models the user doesn't have installed.
+
 Keep responses concise and practical. Focus on actionable advice."""
 
 
@@ -122,27 +135,99 @@ def get_provider():
     return config.get("provider", "openrouter")
 
 
+def get_installed_models():
+    """Get lists of installed models for context."""
+    try:
+        import folder_paths
+        info = {}
+        for category in ["checkpoints", "loras", "vae", "upscale_models", "controlnet", "embeddings"]:
+            try:
+                files = folder_paths.get_filename_list(category)
+                if files:
+                    info[category] = list(files)
+            except Exception:
+                pass
+        return info
+    except ImportError:
+        return {}
+
+
 def build_system_with_workflow(workflow):
-    """Append workflow JSON to the system prompt if provided."""
+    """Append workflow JSON and installed models to the system prompt."""
     system = SYSTEM_PROMPT
     if workflow:
         workflow_str = json.dumps(workflow, indent=2)
         if len(workflow_str) > 50000:
             workflow_str = workflow_str[:50000] + "\n... (truncated)"
         system += f"\n\nThe user's current ComfyUI workflow:\n```json\n{workflow_str}\n```"
+
+    # Add installed models info
+    models = get_installed_models()
+    if models:
+        system += "\n\n## Available installed models"
+        for category, files in models.items():
+            if files:
+                shown = files[:50]
+                system += f"\n**{category}** ({len(files)} total): "
+                system += ", ".join(shown)
+                if len(files) > 50:
+                    system += f" ... and {len(files) - 50} more"
+
     return system
+
+
+def convert_messages_for_anthropic(messages):
+    """Convert messages with images to Anthropic format."""
+    converted = []
+    for msg in messages:
+        if msg.get("images"):
+            content = []
+            for img in msg["images"]:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.get("media_type", "image/png"),
+                        "data": img["base64"],
+                    }
+                })
+            content.append({"type": "text", "text": msg.get("content", "")})
+            converted.append({"role": msg["role"], "content": content})
+        else:
+            converted.append({"role": msg["role"], "content": msg.get("content", "")})
+    return converted
+
+
+def convert_messages_for_openrouter(messages):
+    """Convert messages with images to OpenAI/OpenRouter format."""
+    converted = []
+    for msg in messages:
+        if msg.get("images"):
+            content = []
+            for img in msg["images"]:
+                media_type = img.get("media_type", "image/png")
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{img['base64']}"}
+                })
+            content.append({"type": "text", "text": msg.get("content", "")})
+            converted.append({"role": msg["role"], "content": content})
+        else:
+            converted.append({"role": msg["role"], "content": msg.get("content", "")})
+    return converted
 
 
 async def stream_anthropic(response, api_key, model, messages, system):
     """Stream from the Anthropic API using the SDK."""
     import anthropic
 
+    converted = convert_messages_for_anthropic(messages)
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async with client.messages.stream(
         model=model,
         max_tokens=4096,
-        messages=messages,
+        messages=converted,
         system=system,
     ) as stream:
         async for text in stream.text_stream:
@@ -157,14 +242,15 @@ async def stream_anthropic(response, api_key, model, messages, system):
 
 async def stream_openrouter(response, api_key, model, messages, system):
     """Stream from OpenRouter (OpenAI-compatible API)."""
+    converted = convert_messages_for_openrouter(messages)
     # OpenAI format: system message goes in the messages array
-    api_messages = [{"role": "system", "content": system}] + messages
+    api_messages = [{"role": "system", "content": system}] + converted
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/comfyui-claude-assistant",
-        "X-Title": "ComfyUI Claude Assistant",
+        "X-Title": "ComfyUI ComfyBot",
     }
 
     payload = {
@@ -298,3 +384,9 @@ async def set_config(request):
 
     save_config(config)
     return web.json_response({"status": "ok"})
+
+
+@routes.get("/claude-assistant/installed-models")
+async def get_installed_models_endpoint(request):
+    """Return lists of installed models (checkpoints, loras, etc.)."""
+    return web.json_response(get_installed_models())
