@@ -11,9 +11,17 @@ from aiohttp import web
 
 routes = PromptServer.instance.routes
 
-# Configuration
-CONFIG_DIR = Path(__file__).parent
-CONFIG_FILE = CONFIG_DIR / "config.json"
+# Configuration — store in a persistent location outside the extension dir
+# so config survives git pulls / reinstalls. Falls back to extension dir.
+def _config_path():
+    # Prefer /workspace (RunPod volume) or home dir, then fall back to extension dir
+    for d in ["/workspace", os.path.expanduser("~")]:
+        p = Path(d)
+        if p.is_dir():
+            return p / ".claude-assistant-config.json"
+    return Path(__file__).parent / "config.json"
+
+CONFIG_FILE = _config_path()
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
