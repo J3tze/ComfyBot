@@ -352,9 +352,9 @@ const ANTHROPIC_MODELS = [
   { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
 ];
 const OPENROUTER_MODELS = [
+  { id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6" },
   { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
   { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5" },
-  { id: "anthropic/claude-opus-4", name: "Claude Opus 4" },
   { id: "openai/gpt-4o", name: "GPT-4o" },
   { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
   { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
@@ -953,56 +953,68 @@ function buildChatUI(el) {
 
   // ── Pop out / Dock
   const popoutBtn = header.querySelector('[data-action="popout"]');
-  let floatingPanel = document.querySelector(".claude-floating-panel");
 
   function popOut() {
-    if (floatingPanel) return;
     STATE.isFloating = true;
     popoutBtn.classList.add("active");
     popoutBtn.title = "Dock back to sidebar";
     popoutBtn.querySelector("i").className = "pi pi-window-minimize";
 
-    floatingPanel = document.createElement("div");
-    floatingPanel.className = "claude-floating-panel";
+    // Remove any existing floating panel (from a previous buildChatUI cycle)
+    const existing = document.querySelector(".claude-floating-panel");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.className = "claude-floating-panel";
     const dragBar = document.createElement("div");
     dragBar.className = "claude-drag-bar";
-    floatingPanel.appendChild(dragBar);
-    floatingPanel.appendChild(root);
+    panel.appendChild(dragBar);
+    panel.appendChild(root);
 
     const pos = STATE.floatingPos || { x: window.innerWidth - 450, y: 60 };
-    floatingPanel.style.left = pos.x + "px";
-    floatingPanel.style.top = pos.y + "px";
-    document.body.appendChild(floatingPanel);
+    panel.style.left = pos.x + "px";
+    panel.style.top = pos.y + "px";
+    document.body.appendChild(panel);
 
     // Drag handling
     let dragging = false, dx = 0, dy = 0;
     dragBar.addEventListener("mousedown", (e) => {
       dragging = true;
-      dx = e.clientX - floatingPanel.offsetLeft;
-      dy = e.clientY - floatingPanel.offsetTop;
+      dx = e.clientX - panel.offsetLeft;
+      dy = e.clientY - panel.offsetTop;
       e.preventDefault();
     });
-    document.addEventListener("mousemove", (e) => {
+    const onMove = (e) => {
       if (!dragging) return;
       const nx = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dx));
       const ny = Math.max(0, Math.min(window.innerHeight - 50, e.clientY - dy));
-      floatingPanel.style.left = nx + "px";
-      floatingPanel.style.top = ny + "px";
+      panel.style.left = nx + "px";
+      panel.style.top = ny + "px";
       STATE.floatingPos = { x: nx, y: ny };
+    };
+    const onUp = () => { dragging = false; };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    // Clean up listeners when panel is removed
+    const observer = new MutationObserver(() => {
+      if (!panel.isConnected) {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        observer.disconnect();
+      }
     });
-    document.addEventListener("mouseup", () => { dragging = false; });
+    observer.observe(document.body, { childList: true });
   }
 
   function dockBack() {
-    if (!floatingPanel) return;
     STATE.isFloating = false;
     popoutBtn.classList.remove("active");
     popoutBtn.title = "Pop out";
     popoutBtn.querySelector("i").className = "pi pi-external-link";
 
     el.appendChild(root);
-    floatingPanel.remove();
-    floatingPanel = null;
+    const existing = document.querySelector(".claude-floating-panel");
+    if (existing) existing.remove();
   }
 
   popoutBtn.addEventListener("click", () => {
