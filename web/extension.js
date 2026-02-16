@@ -35,6 +35,8 @@ const STYLES = `
 }
 .claude-header-btn:hover { opacity: 1; background: rgba(255,255,255,0.05); }
 .claude-header-btn.active { opacity: 1; color: var(--p-primary-color, #4af); background: rgba(74,170,255,0.1); }
+.claude-header-btn.popout-btn { opacity: 0.7; }
+.claude-header-btn.popout-btn:hover { opacity: 1; color: var(--p-primary-color, #4af); }
 
 /* ── Settings ── */
 .claude-settings {
@@ -284,13 +286,13 @@ const STYLES = `
 
 /* ── Floating panel ── */
 .claude-floating-panel {
-  position: fixed; z-index: 9999;
+  position: fixed; z-index: 99999;
   width: 420px; height: 600px;
   min-width: 320px; min-height: 300px;
-  background: var(--bg-color, #1a1a1a);
-  border: 1px solid rgba(255,255,255,0.1);
+  background: #1e1e1e;
+  border: 1px solid rgba(74,170,255,0.3);
   border-radius: 12px; overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(74,170,255,0.1);
   display: flex; flex-direction: column;
   resize: both;
 }
@@ -298,8 +300,13 @@ const STYLES = `
   flex: 1; min-height: 0;
 }
 .claude-floating-panel .claude-drag-bar {
-  height: 6px; cursor: grab; flex-shrink: 0;
-  background: linear-gradient(135deg, rgba(74,170,255,0.15) 0%, transparent 100%);
+  height: 28px; cursor: grab; flex-shrink: 0;
+  background: linear-gradient(135deg, rgba(74,170,255,0.1) 0%, rgba(0,0,0,0.3) 100%);
+  display: flex; align-items: center; justify-content: center;
+}
+.claude-floating-panel .claude-drag-bar::after {
+  content: ""; width: 40px; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,0.15);
 }
 .claude-floating-panel .claude-drag-bar:active { cursor: grabbing; }
 
@@ -735,7 +742,7 @@ function buildChatUI(el) {
   header.className = "claude-header";
   header.innerHTML = `
     <span class="claude-header-title">ComfyBot</span>
-    <button class="claude-header-btn" data-action="popout" title="Pop out / Dock"><i class="pi pi-external-link"></i></button>
+    <button class="claude-header-btn popout-btn" data-action="popout" title="Pop out to floating window"><i class="pi pi-external-link"></i></button>
     <button class="claude-header-btn" data-action="settings" title="Settings"><i class="pi pi-cog"></i></button>
     <button class="claude-header-btn" data-action="clear" title="Clear chat"><i class="pi pi-trash"></i></button>
   `;
@@ -971,7 +978,19 @@ function buildChatUI(el) {
     panel.appendChild(dragBar);
     panel.appendChild(root);
 
-    const pos = STATE.floatingPos || { x: window.innerWidth - 450, y: 60 };
+    // Leave a placeholder in the sidebar so the user knows where it went
+    el.innerHTML = "";
+    const placeholder = document.createElement("div");
+    placeholder.className = "claude-floating-placeholder";
+    placeholder.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;opacity:0.35;font-size:13px;gap:12px;text-align:center;padding:30px;";
+    placeholder.innerHTML = '<i class="pi pi-external-link" style="font-size:24px;opacity:0.5;"></i>ComfyBot is in floating mode.<br>Switch to another tab to use side-by-side.';
+    el.appendChild(placeholder);
+
+    // Default: center of viewport, avoiding the sidebar on the right
+    const pos = STATE.floatingPos || {
+      x: Math.max(20, Math.floor(window.innerWidth / 2 - 210)),
+      y: Math.max(20, Math.floor(window.innerHeight / 2 - 300)),
+    };
     panel.style.left = pos.x + "px";
     panel.style.top = pos.y + "px";
     document.body.appendChild(panel);
@@ -1009,9 +1028,10 @@ function buildChatUI(el) {
   function dockBack() {
     STATE.isFloating = false;
     popoutBtn.classList.remove("active");
-    popoutBtn.title = "Pop out";
+    popoutBtn.title = "Pop out to floating window";
     popoutBtn.querySelector("i").className = "pi pi-external-link";
 
+    el.innerHTML = "";
     el.appendChild(root);
     const existing = document.querySelector(".claude-floating-panel");
     if (existing) existing.remove();
