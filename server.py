@@ -249,7 +249,7 @@ async def stream_openrouter(response, api_key, model, messages, system):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/comfyui-claude-assistant",
+        "HTTP-Referer": "https://github.com/J3tze/comfyui-claude-assistant",
         "X-Title": "ComfyUI ComfyBot",
     }
 
