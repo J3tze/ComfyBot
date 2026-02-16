@@ -49,35 +49,63 @@ When the user asks you to modify their workflow, output a ```comfyui-actions cod
 containing a JSON array of actions. The frontend will parse these and show an "Apply" button.
 
 Available actions:
-- add_node: Add a node. Fields: type (required), pos [x,y], title, widgets {name: value}
+- add_node: Add a node. Fields: type (required), id (reference id for connections), pos [x,y], title, widgets {name: value}
 - remove_node: Remove a node. Fields: node_id
-- connect: Connect output→input. Fields: from_node, from_slot (index or name), to_node, to_slot (index or name)
-- disconnect: Disconnect an input. Fields: node_id, slot (input index or name)
+- connect: Connect output→input. Fields: from_node, from_slot (output name), to_node, to_slot (input name)
+- disconnect: Disconnect an input. Fields: node_id, slot (input name)
 - set_widget: Change a widget value. Fields: node_id, name, value
 
-Example:
-```comfyui-actions
-[
-  {"action": "add_node", "type": "KSampler", "pos": [500, 300], "widgets": {"steps": 30, "cfg": 7}},
-  {"action": "connect", "from_node": 4, "from_slot": "MODEL", "to_node": 3, "to_slot": "model"},
-  {"action": "set_widget", "node_id": 3, "name": "seed", "value": 42}
-]
-```
+IMPORTANT - When adding new nodes, always include an "id" field with a unique reference number. \
+Use these same reference numbers in connect/set_widget actions. The system will map them to actual node IDs. \
+For existing nodes already in the workflow, use their real node IDs.
 
-Always explain what you're changing before the action block. Use node IDs from the workflow JSON. \
+Always explain what you're changing before the action block. Use node IDs from the workflow JSON for existing nodes. \
 For new nodes, choose a position near related nodes.
 
-## Common node types
-**Loading:** CheckpointLoaderSimple, LoraLoader, LoraLoaderModelOnly, UNETLoader, DualCLIPLoader, CLIPLoader, VAELoader
-**Conditioning:** CLIPTextEncode, ConditioningCombine, ConditioningSetArea, ConditioningSetMask, CLIPSetLastLayer
-**Sampling:** KSampler, KSamplerAdvanced, SamplerCustom
-**Latent:** EmptyLatentImage, LatentUpscale, LatentUpscaleBy, LatentComposite, LatentBlend, VAEDecode, VAEEncode
-**Image:** SaveImage, PreviewImage, LoadImage, ImageScale, ImageScaleBy, ImageUpscaleWithModel
-**ControlNet:** ControlNetLoader, ControlNetApply, ControlNetApplyAdvanced
-**IP-Adapter:** IPAdapterModelLoader, IPAdapter, IPAdapterAdvanced
-**Masking:** MaskComposite, FeatherMask, SolidMask, ImageToMask
-**Upscale:** UpscaleModelLoader, ImageUpscaleWithModel
-**Utility:** PrimitiveNode, Reroute, Note
+## Node types and their slots
+Use EXACTLY these slot names when connecting nodes:
+
+**CheckpointLoaderSimple** — Outputs: MODEL, CLIP, VAE | Widgets: ckpt_name
+**LoraLoader** — Inputs: model, clip | Outputs: MODEL, CLIP | Widgets: lora_name, strength_model, strength_clip
+**CLIPTextEncode** — Inputs: clip | Outputs: CONDITIONING | Widgets: text
+**EmptyLatentImage** — Outputs: LATENT | Widgets: width, height, batch_size
+**KSampler** — Inputs: model, positive, negative, latent_image | Outputs: LATENT | Widgets: seed, steps, cfg, sampler_name, scheduler, denoise
+**KSamplerAdvanced** — Inputs: model, positive, negative, latent_image | Outputs: LATENT | Widgets: noise_seed, steps, cfg, sampler_name, scheduler, start_at_step, end_at_step, add_noise, return_with_leftover_noise
+**VAEDecode** — Inputs: samples, vae | Outputs: IMAGE
+**VAEEncode** — Inputs: pixels, vae | Outputs: LATENT
+**SaveImage** — Inputs: images | Widgets: filename_prefix
+**PreviewImage** — Inputs: images
+**LoadImage** — Outputs: IMAGE, MASK | Widgets: image
+**ImageScale** — Inputs: image | Outputs: IMAGE | Widgets: width, height, upscale_method, crop
+**ImageUpscaleWithModel** — Inputs: upscale_model, image | Outputs: IMAGE
+**UpscaleModelLoader** — Outputs: UPSCALE_MODEL | Widgets: model_name
+**ControlNetLoader** — Outputs: CONTROL_NET | Widgets: control_net_name
+**ControlNetApplyAdvanced** — Inputs: positive, negative, control_net, image | Outputs: positive (CONDITIONING), negative (CONDITIONING) | Widgets: strength, start_percent, end_percent
+**ConditioningCombine** — Inputs: conditioning_1, conditioning_2 | Outputs: CONDITIONING
+**LatentUpscale** — Inputs: samples | Outputs: LATENT | Widgets: upscale_method, width, height, crop
+**LatentUpscaleBy** — Inputs: samples | Outputs: LATENT | Widgets: upscale_method, scale_by
+
+## Example: Build a complete txt2img workflow from scratch
+```comfyui-actions
+[
+  {"action": "add_node", "id": 1, "type": "CheckpointLoaderSimple", "pos": [100, 300]},
+  {"action": "add_node", "id": 2, "type": "CLIPTextEncode", "pos": [400, 200], "title": "Positive Prompt", "widgets": {"text": "a beautiful landscape"}},
+  {"action": "add_node", "id": 3, "type": "CLIPTextEncode", "pos": [400, 400], "title": "Negative Prompt", "widgets": {"text": "worst quality, low quality"}},
+  {"action": "add_node", "id": 4, "type": "EmptyLatentImage", "pos": [400, 600], "widgets": {"width": 1024, "height": 1024}},
+  {"action": "add_node", "id": 5, "type": "KSampler", "pos": [700, 300], "widgets": {"steps": 20, "cfg": 7, "denoise": 1}},
+  {"action": "add_node", "id": 6, "type": "VAEDecode", "pos": [1000, 300]},
+  {"action": "add_node", "id": 7, "type": "SaveImage", "pos": [1250, 300]},
+  {"action": "connect", "from_node": 1, "from_slot": "CLIP", "to_node": 2, "to_slot": "clip"},
+  {"action": "connect", "from_node": 1, "from_slot": "CLIP", "to_node": 3, "to_slot": "clip"},
+  {"action": "connect", "from_node": 1, "from_slot": "MODEL", "to_node": 5, "to_slot": "model"},
+  {"action": "connect", "from_node": 2, "from_slot": "CONDITIONING", "to_node": 5, "to_slot": "positive"},
+  {"action": "connect", "from_node": 3, "from_slot": "CONDITIONING", "to_node": 5, "to_slot": "negative"},
+  {"action": "connect", "from_node": 4, "from_slot": "LATENT", "to_node": 5, "to_slot": "latent_image"},
+  {"action": "connect", "from_node": 5, "from_slot": "LATENT", "to_node": 6, "to_slot": "samples"},
+  {"action": "connect", "from_node": 1, "from_slot": "VAE", "to_node": 6, "to_slot": "vae"},
+  {"action": "connect", "from_node": 6, "from_slot": "IMAGE", "to_node": 7, "to_slot": "images"}
+]
+```
 
 ## Prompt engineering
 When helping with Stable Diffusion prompts:
@@ -121,6 +149,9 @@ def get_api_key(provider=None):
     p = provider or config.get("provider", "openrouter")
     if p == "anthropic":
         return config.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+    elif p == "bedrock":
+        # Bedrock uses AWS credentials, not a single API key
+        return config.get("bedrock_access_key") or os.environ.get("AWS_ACCESS_KEY_ID", "")
     else:
         return config.get("openrouter_api_key") or os.environ.get("OPENROUTER_API_KEY", "")
 
@@ -240,6 +271,33 @@ async def stream_anthropic(response, api_key, model, messages, system):
     )
 
 
+async def stream_bedrock(response, model, messages, system, aws_access_key=None, aws_secret_key=None, aws_region=None):
+    """Stream from AWS Bedrock using the Anthropic SDK."""
+    import anthropic
+
+    converted = convert_messages_for_anthropic(messages)
+    client = anthropic.AsyncAnthropicBedrock(
+        aws_access_key=aws_access_key or None,
+        aws_secret_key=aws_secret_key or None,
+        aws_region=aws_region or "us-east-1",
+    )
+
+    async with client.messages.stream(
+        model=model,
+        max_tokens=4096,
+        messages=converted,
+        system=system,
+    ) as stream:
+        async for text in stream.text_stream:
+            event_data = json.dumps({"type": "text_delta", "text": text})
+            await response.write(f"data: {event_data}\n\n".encode("utf-8"))
+            await asyncio.sleep(0)
+
+    await response.write(
+        f"data: {json.dumps({'type': 'done'})}\n\n".encode("utf-8")
+    )
+
+
 async def stream_openrouter(response, api_key, model, messages, system):
     """Stream from OpenRouter (OpenAI-compatible API)."""
     converted = convert_messages_for_openrouter(messages)
@@ -312,13 +370,26 @@ async def chat_stream(request):
     data = await request.json()
 
     provider = data.get("provider") or get_provider()
-    api_key = data.get("api_key") or get_api_key(provider)
-    if not api_key:
-        key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENROUTER_API_KEY"
-        return web.json_response(
-            {"error": f"No API key configured. Set {key_name} environment variable or configure it in the sidebar settings."},
-            status=400,
-        )
+    config = load_config()
+
+    # Bedrock uses AWS credentials instead of a single API key
+    if provider == "bedrock":
+        aws_access_key = config.get("bedrock_access_key") or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        aws_secret_key = config.get("bedrock_secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        aws_region = config.get("bedrock_region") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        if not aws_access_key and not os.environ.get("AWS_ACCESS_KEY_ID"):
+            return web.json_response(
+                {"error": "No AWS credentials configured. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables or configure them in settings."},
+                status=400,
+            )
+    else:
+        api_key = data.get("api_key") or get_api_key(provider)
+        if not api_key:
+            key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENROUTER_API_KEY"
+            return web.json_response(
+                {"error": f"No API key configured. Set {key_name} environment variable or configure it in the sidebar settings."},
+                status=400,
+            )
 
     messages = data.get("messages", [])
     workflow = data.get("workflow")
@@ -338,6 +409,8 @@ async def chat_stream(request):
     try:
         if provider == "anthropic":
             await stream_anthropic(response, api_key, model, messages, system)
+        elif provider == "bedrock":
+            await stream_bedrock(response, model, messages, system, aws_access_key, aws_secret_key, aws_region)
         else:
             await stream_openrouter(response, api_key, model, messages, system)
     except Exception as e:
@@ -360,14 +433,25 @@ async def get_config(request):
 
     anthropic_key = config.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
     openrouter_key = config.get("openrouter_api_key") or os.environ.get("OPENROUTER_API_KEY", "")
+    bedrock_access = config.get("bedrock_access_key") or os.environ.get("AWS_ACCESS_KEY_ID", "")
+    bedrock_secret = config.get("bedrock_secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    bedrock_region = config.get("bedrock_region") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
-    active_key = anthropic_key if provider == "anthropic" else openrouter_key
+    if provider == "bedrock":
+        active_key = bedrock_access
+    elif provider == "anthropic":
+        active_key = anthropic_key
+    else:
+        active_key = openrouter_key
 
     return web.json_response({
         "provider": provider,
         "has_api_key": bool(active_key),
         "anthropic_key_preview": f"...{anthropic_key[-4:]}" if len(anthropic_key) > 4 else "",
         "openrouter_key_preview": f"...{openrouter_key[-4:]}" if len(openrouter_key) > 4 else "",
+        "bedrock_access_preview": f"...{bedrock_access[-4:]}" if len(bedrock_access) > 4 else "",
+        "bedrock_secret_preview": f"...{bedrock_secret[-4:]}" if len(bedrock_secret) > 4 else "",
+        "bedrock_region": bedrock_region,
         "model": config.get("model", "anthropic/claude-sonnet-4.5"),
     })
 
@@ -378,7 +462,8 @@ async def set_config(request):
     data = await request.json()
     config = load_config()
 
-    for key in ("provider", "model", "anthropic_api_key", "openrouter_api_key"):
+    for key in ("provider", "model", "anthropic_api_key", "openrouter_api_key",
+                 "bedrock_access_key", "bedrock_secret_key", "bedrock_region"):
         if key in data:
             config[key] = data[key]
 

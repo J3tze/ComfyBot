@@ -220,6 +220,17 @@ const STYLES = `
   background: rgba(255,255,255,0.08); color: #fff;
   border-color: rgba(255,255,255,0.15);
 }
+.claude-batch-group {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.claude-batch-select {
+  padding: 4px 6px; font-size: 11px; border-radius: 10px;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  color: var(--fg-color, #aaa); font-family: inherit; cursor: pointer;
+}
+.claude-batch-select:hover {
+  background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15);
+}
 .claude-quick-btn.error-btn {
   border-color: rgba(239,68,68,0.3); color: #fca5a5;
   background: rgba(239,68,68,0.06);
@@ -270,6 +281,27 @@ const STYLES = `
   transition: transform 0.2s;
 }
 .claude-msg-images img:hover { transform: scale(1.02); }
+
+/* ── Floating panel ── */
+.claude-floating-panel {
+  position: fixed; z-index: 9999;
+  width: 420px; height: 600px;
+  min-width: 320px; min-height: 300px;
+  background: var(--bg-color, #1a1a1a);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: flex; flex-direction: column;
+  resize: both;
+}
+.claude-floating-panel .claude-root {
+  flex: 1; min-height: 0;
+}
+.claude-floating-panel .claude-drag-bar {
+  height: 6px; cursor: grab; flex-shrink: 0;
+  background: linear-gradient(135deg, rgba(74,170,255,0.15) 0%, transparent 100%);
+}
+.claude-floating-panel .claude-drag-bar:active { cursor: grabbing; }
 
 /* ── Input area ── */
 .claude-input-area {
@@ -330,6 +362,13 @@ const OPENROUTER_MODELS = [
   { id: "deepseek/deepseek-chat-v3-0324", name: "DeepSeek V3" },
   { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick" },
 ];
+const BEDROCK_MODELS = [
+  { id: "global.anthropic.claude-opus-4-6-v1", name: "Claude Opus 4.6" },
+  { id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5" },
+  { id: "global.anthropic.claude-opus-4-5-20251101-v1:0", name: "Claude Opus 4.5" },
+  { id: "global.anthropic.claude-sonnet-4-20250514-v1:0", name: "Claude Sonnet 4" },
+  { id: "global.anthropic.claude-haiku-4-5-20251001-v1:0", name: "Claude Haiku 4.5" },
+];
 
 /* ═══════════════════════════════════════════════════════════════════
    PERSISTENT STATE (survives sidebar tab switches)
@@ -348,6 +387,8 @@ const STATE = {
   lastOutputImages: [],     // [{filename, subfolder, type}] from last execution
   pendingImages: [],        // [{base64, media_type, thumbnail_url}] to attach to next message
   outputImageHistory: [],   // [{images: [...imgRefs], timestamp}] across executions
+  isFloating: false,        // whether the panel is popped out as floating
+  floatingPos: null,        // {x, y} position of floating panel
 };
 
 // Module-scoped DOM references (updated on each buildChatUI call)
@@ -360,6 +401,8 @@ const DOM = {
   imgAttachBtn: null,
   imgPreview: null,
   batchBtn: null,
+  batchGroup: null,
+  batchSelect: null,
 };
 
 let _listenersRegistered = false;
@@ -396,7 +439,7 @@ function executeGraphAction(action) {
             if (w) w.value = v;
           }
         }
-        return { ok: true, msg: `Added ${action.type} (node #${node.id})` };
+        return { ok: true, msg: `Added ${action.type} (node #${node.id})`, nodeId: node.id };
       }
       case "remove_node": {
         const node = graph.getNodeById(action.node_id);
@@ -442,7 +485,39 @@ function executeGraphAction(action) {
 }
 
 function applyGraphActions(actions) {
-  const results = actions.map((a) => executeGraphAction(a));
+  const explicitMap = {}; // AI-assigned id → actual LiteGraph id
+  const positionMap = {}; // sequential add position (1,2,3...) → actual id
+  let addCount = 0;
+
+  function remapId(id) {
+    // 1. Explicit id mapping (AI provided "id" field in add_node) — always wins
+    if (explicitMap[id] != null) return explicitMap[id];
+    // 2. Fallback: sequential position mapping, but only if node doesn't exist in graph
+    //    (avoids accidentally remapping a reference to a real existing node)
+    if (!app.graph.getNodeById(id) && positionMap[id] != null) return positionMap[id];
+    return id;
+  }
+
+  const results = actions.map((a) => {
+    // Remap node IDs through the mapping table
+    if (a.action === "connect") {
+      a = { ...a, from_node: remapId(a.from_node), to_node: remapId(a.to_node) };
+    } else if (
+      a.action === "set_widget" ||
+      a.action === "remove_node" ||
+      a.action === "disconnect"
+    ) {
+      a = { ...a, node_id: remapId(a.node_id) };
+    }
+    const result = executeGraphAction(a);
+    // Track ID mapping for add_node
+    if (a.action === "add_node" && result.ok && result.nodeId != null) {
+      addCount++;
+      if (a.id != null) explicitMap[a.id] = result.nodeId;
+      if (positionMap[addCount] == null) positionMap[addCount] = result.nodeId;
+    }
+    return result;
+  });
   app.graph.setDirtyCanvas(true, true);
   return results;
 }
@@ -577,14 +652,20 @@ function updateImagePreview() {
    ═══════════════════════════════════════════════════════════════════ */
 
 function updateBatchButton() {
-  if (!DOM.batchBtn) return;
+  if (!DOM.batchGroup) return;
   const runs = STATE.outputImageHistory.length;
   if (runs >= 2) {
-    DOM.batchBtn.style.display = "";
-    const count = DOM.batchBtn.querySelector(".batch-count");
-    if (count) count.textContent = String(runs);
+    DOM.batchGroup.style.display = "";
+    // Rebuild select options: "All (N)", then N-1 down to 2
+    const sel = DOM.batchSelect;
+    const prev = sel.value;
+    sel.innerHTML = `<option value="all">All (${runs})</option>`;
+    for (let i = runs; i >= 2; i--) {
+      sel.innerHTML += `<option value="${i}">Last ${i}</option>`;
+    }
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
   } else {
-    DOM.batchBtn.style.display = "none";
+    DOM.batchGroup.style.display = "none";
   }
 }
 
@@ -654,6 +735,7 @@ function buildChatUI(el) {
   header.className = "claude-header";
   header.innerHTML = `
     <span class="claude-header-title">ComfyBot</span>
+    <button class="claude-header-btn" data-action="popout" title="Pop out / Dock"><i class="pi pi-external-link"></i></button>
     <button class="claude-header-btn" data-action="settings" title="Settings"><i class="pi pi-cog"></i></button>
     <button class="claude-header-btn" data-action="clear" title="Clear chat"><i class="pi pi-trash"></i></button>
   `;
@@ -667,6 +749,7 @@ function buildChatUI(el) {
       <select class="claude-provider-select">
         <option value="openrouter">OpenRouter</option>
         <option value="anthropic">Anthropic (direct)</option>
+        <option value="bedrock">AWS Bedrock</option>
       </select>
     </div>
     <div class="claude-settings-row claude-row-openrouter-key">
@@ -677,6 +760,18 @@ function buildChatUI(el) {
     <div class="claude-settings-row claude-row-anthropic-key hidden">
       <label>Anthropic API Key</label>
       <input type="password" class="claude-anthropic-key" placeholder="sk-ant-..." spellcheck="false" autocomplete="off">
+    </div>
+    <div class="claude-settings-row claude-row-bedrock-access hidden">
+      <label>AWS Access Key ID</label>
+      <input type="password" class="claude-bedrock-access" placeholder="AKIA..." spellcheck="false" autocomplete="off">
+    </div>
+    <div class="claude-settings-row claude-row-bedrock-secret hidden">
+      <label>AWS Secret Access Key</label>
+      <input type="password" class="claude-bedrock-secret" placeholder="Secret key..." spellcheck="false" autocomplete="off">
+    </div>
+    <div class="claude-settings-row claude-row-bedrock-region hidden">
+      <label>AWS Region</label>
+      <input type="text" class="claude-bedrock-region" placeholder="us-east-1" spellcheck="false" autocomplete="off">
     </div>
     <div class="claude-settings-row">
       <label>Model</label>
@@ -714,7 +809,10 @@ function buildChatUI(el) {
     <button class="claude-quick-btn" data-prompt="Suggest optimizations for this workflow to improve quality, speed, or both. Be specific about which nodes/settings to change.">Optimize</button>
     <button class="claude-quick-btn" data-prompt="improve-prompts">Improve Prompts</button>
     <button class="claude-quick-btn" data-prompt="analyze-output">Analyze Output</button>
-    <button class="claude-quick-btn batch-btn" data-prompt="batch-analyze" style="display:none">Batch Analyze (<span class="batch-count">0</span>)</button>
+    <span class="claude-batch-group" style="display:none">
+      <button class="claude-quick-btn batch-btn" data-prompt="batch-analyze">Batch Analyze</button>
+      <select class="claude-batch-select" title="Number of recent runs to compare"></select>
+    </span>
     <button class="claude-quick-btn error-btn" data-prompt="fix-error" style="display:none">Fix Error</button>
   `;
 
@@ -750,8 +848,14 @@ function buildChatUI(el) {
   const providerSelect = settings.querySelector(".claude-provider-select");
   const openrouterKeyInput = settings.querySelector(".claude-openrouter-key");
   const anthropicKeyInput = settings.querySelector(".claude-anthropic-key");
+  const bedrockAccessInput = settings.querySelector(".claude-bedrock-access");
+  const bedrockSecretInput = settings.querySelector(".claude-bedrock-secret");
+  const bedrockRegionInput = settings.querySelector(".claude-bedrock-region");
   const openrouterKeyRow = settings.querySelector(".claude-row-openrouter-key");
   const anthropicKeyRow = settings.querySelector(".claude-row-anthropic-key");
+  const bedrockAccessRow = settings.querySelector(".claude-row-bedrock-access");
+  const bedrockSecretRow = settings.querySelector(".claude-row-bedrock-secret");
+  const bedrockRegionRow = settings.querySelector(".claude-row-bedrock-region");
   const modelSelect = settings.querySelector(".claude-model-select");
   const saveBtn = settings.querySelector(".claude-save-btn");
   const statusEl = settings.querySelector(".claude-settings-status");
@@ -761,6 +865,8 @@ function buildChatUI(el) {
   const workflowCheckbox = inputArea.querySelector(".claude-workflow-toggle input");
   const errorBtn = quickActions.querySelector('[data-prompt="fix-error"]');
   const batchBtn = quickActions.querySelector('[data-prompt="batch-analyze"]');
+  const batchGroup = quickActions.querySelector(".claude-batch-group");
+  const batchSelect = quickActions.querySelector(".claude-batch-select");
 
   // Update module-scoped DOM refs
   DOM.messages = messages;
@@ -770,10 +876,14 @@ function buildChatUI(el) {
   DOM.imgAttachBtn = imgAttachBtn;
   DOM.imgPreview = imgPreview;
   DOM.batchBtn = batchBtn;
+  DOM.batchGroup = batchGroup;
+  DOM.batchSelect = batchSelect;
 
   // ── Model dropdown
   function updateModelList(provider, currentModel) {
-    const models = provider === "anthropic" ? ANTHROPIC_MODELS : OPENROUTER_MODELS;
+    const models = provider === "anthropic" ? ANTHROPIC_MODELS
+                 : provider === "bedrock" ? BEDROCK_MODELS
+                 : OPENROUTER_MODELS;
     modelSelect.innerHTML = models.map((m) => `<option value="${m.id}">${m.name}</option>`).join("");
     if (currentModel && models.some((m) => m.id === currentModel)) modelSelect.value = currentModel;
   }
@@ -782,6 +892,9 @@ function buildChatUI(el) {
     STATE.currentProvider = provider;
     openrouterKeyRow.classList.toggle("hidden", provider !== "openrouter");
     anthropicKeyRow.classList.toggle("hidden", provider !== "anthropic");
+    bedrockAccessRow.classList.toggle("hidden", provider !== "bedrock");
+    bedrockSecretRow.classList.toggle("hidden", provider !== "bedrock");
+    bedrockRegionRow.classList.toggle("hidden", provider !== "bedrock");
     updateModelList(provider, modelSelect.value);
   }
 
@@ -797,6 +910,9 @@ function buildChatUI(el) {
       updateProviderUI(STATE.currentProvider);
       if (cfg.openrouter_key_preview) openrouterKeyInput.placeholder = `Current: ${cfg.openrouter_key_preview}`;
       if (cfg.anthropic_key_preview) anthropicKeyInput.placeholder = `Current: ${cfg.anthropic_key_preview}`;
+      if (cfg.bedrock_access_preview) bedrockAccessInput.placeholder = `Current: ${cfg.bedrock_access_preview}`;
+      if (cfg.bedrock_secret_preview) bedrockSecretInput.placeholder = `Current: ${cfg.bedrock_secret_preview}`;
+      if (cfg.bedrock_region) bedrockRegionInput.value = cfg.bedrock_region;
       if (cfg.model) updateModelList(STATE.currentProvider, cfg.model);
       if (!cfg.has_api_key) {
         STATE.settingsOpen = true;
@@ -835,16 +951,82 @@ function buildChatUI(el) {
     updateBatchButton();
   });
 
+  // ── Pop out / Dock
+  const popoutBtn = header.querySelector('[data-action="popout"]');
+  let floatingPanel = document.querySelector(".claude-floating-panel");
+
+  function popOut() {
+    if (floatingPanel) return;
+    STATE.isFloating = true;
+    popoutBtn.classList.add("active");
+    popoutBtn.title = "Dock back to sidebar";
+    popoutBtn.querySelector("i").className = "pi pi-window-minimize";
+
+    floatingPanel = document.createElement("div");
+    floatingPanel.className = "claude-floating-panel";
+    const dragBar = document.createElement("div");
+    dragBar.className = "claude-drag-bar";
+    floatingPanel.appendChild(dragBar);
+    floatingPanel.appendChild(root);
+
+    const pos = STATE.floatingPos || { x: window.innerWidth - 450, y: 60 };
+    floatingPanel.style.left = pos.x + "px";
+    floatingPanel.style.top = pos.y + "px";
+    document.body.appendChild(floatingPanel);
+
+    // Drag handling
+    let dragging = false, dx = 0, dy = 0;
+    dragBar.addEventListener("mousedown", (e) => {
+      dragging = true;
+      dx = e.clientX - floatingPanel.offsetLeft;
+      dy = e.clientY - floatingPanel.offsetTop;
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const nx = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dx));
+      const ny = Math.max(0, Math.min(window.innerHeight - 50, e.clientY - dy));
+      floatingPanel.style.left = nx + "px";
+      floatingPanel.style.top = ny + "px";
+      STATE.floatingPos = { x: nx, y: ny };
+    });
+    document.addEventListener("mouseup", () => { dragging = false; });
+  }
+
+  function dockBack() {
+    if (!floatingPanel) return;
+    STATE.isFloating = false;
+    popoutBtn.classList.remove("active");
+    popoutBtn.title = "Pop out";
+    popoutBtn.querySelector("i").className = "pi pi-external-link";
+
+    el.appendChild(root);
+    floatingPanel.remove();
+    floatingPanel = null;
+  }
+
+  popoutBtn.addEventListener("click", () => {
+    if (STATE.isFloating) dockBack(); else popOut();
+  });
+
+  // Restore floating state on tab switch rebuild
+  if (STATE.isFloating) popOut();
+
   saveBtn.addEventListener("click", async () => {
     const body = { provider: providerSelect.value, model: modelSelect.value };
     if (openrouterKeyInput.value.trim()) body.openrouter_api_key = openrouterKeyInput.value.trim();
     if (anthropicKeyInput.value.trim()) body.anthropic_api_key = anthropicKeyInput.value.trim();
+    if (bedrockAccessInput.value.trim()) body.bedrock_access_key = bedrockAccessInput.value.trim();
+    if (bedrockSecretInput.value.trim()) body.bedrock_secret_key = bedrockSecretInput.value.trim();
+    if (bedrockRegionInput.value.trim()) body.bedrock_region = bedrockRegionInput.value.trim();
     try {
       const res = await fetch("/claude-assistant/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (res.ok) {
         statusEl.textContent = "Saved!";
         if (openrouterKeyInput.value.trim()) { openrouterKeyInput.placeholder = `Current: ...${openrouterKeyInput.value.trim().slice(-4)}`; openrouterKeyInput.value = ""; }
         if (anthropicKeyInput.value.trim()) { anthropicKeyInput.placeholder = `Current: ...${anthropicKeyInput.value.trim().slice(-4)}`; anthropicKeyInput.value = ""; }
+        if (bedrockAccessInput.value.trim()) { bedrockAccessInput.placeholder = `Current: ...${bedrockAccessInput.value.trim().slice(-4)}`; bedrockAccessInput.value = ""; }
+        if (bedrockSecretInput.value.trim()) { bedrockSecretInput.placeholder = `Current: ...${bedrockSecretInput.value.trim().slice(-4)}`; bedrockSecretInput.value = ""; }
         setTimeout(() => { statusEl.textContent = ""; }, 2000);
       }
     } catch { statusEl.textContent = "Error saving"; }
@@ -1075,12 +1257,16 @@ function buildChatUI(el) {
     } else if (prompt === "batch-analyze") {
       if (STATE.outputImageHistory.length < 2) return;
       try {
-        const allRefs = STATE.outputImageHistory.flatMap((e) => e.images);
+        const selVal = batchSelect ? batchSelect.value : "all";
+        const history = selVal === "all"
+          ? STATE.outputImageHistory
+          : STATE.outputImageHistory.slice(-parseInt(selVal));
+        const allRefs = history.flatMap((e) => e.images);
         const images = [];
         for (const imgRef of allRefs.slice(0, 16)) {
           images.push(await fetchImageAsBase64(imgRef));
         }
-        const runCount = STATE.outputImageHistory.length;
+        const runCount = history.length;
         STATE.outputImageHistory = [];
         updateBatchButton();
         sendMessageText(
@@ -1140,6 +1326,7 @@ function buildChatUI(el) {
 
     try {
       const body = {
+        provider: STATE.currentProvider,
         messages: STATE.conversationHistory.map((m) => {
           const msg = { role: m.role, content: m.content };
           if (m.images) {
