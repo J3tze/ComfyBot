@@ -443,7 +443,12 @@ function executeGraphAction(action) {
         if (action.widgets && node.widgets) {
           for (const [k, v] of Object.entries(action.widgets)) {
             const w = node.widgets.find((w) => w.name === k);
-            if (w) w.value = v;
+            if (w) {
+              w.value = v;
+              if (typeof w.callback === "function") {
+                try { w.callback(w.value, app.canvas, node, null, {}); } catch {}
+              }
+            }
           }
         }
         return { ok: true, msg: `Added ${action.type} (node #${node.id})`, nodeId: node.id };
@@ -478,10 +483,31 @@ function executeGraphAction(action) {
       case "set_widget": {
         const node = graph.getNodeById(action.node_id);
         if (!node) return { ok: false, msg: `Node #${action.node_id} not found` };
+        // Try widget first
         const w = node.widgets?.find((w) => w.name === action.name);
-        if (!w) return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id}` };
-        w.value = action.value;
-        return { ok: true, msg: `Set ${action.name}=${JSON.stringify(action.value)} on #${action.node_id}` };
+        if (w) {
+          w.value = action.value;
+          // Trigger widget callback so custom nodes react to the change
+          if (typeof w.callback === "function") {
+            try { w.callback(w.value, app.canvas, node, null, {}); } catch {}
+          }
+          // Also trigger node-level change handler
+          if (typeof node.onWidgetChanged === "function") {
+            try { node.onWidgetChanged(action.name, action.value, w); } catch {}
+          }
+          node.setDirtyCanvas?.(true, true);
+          return { ok: true, msg: `Set ${action.name}=${JSON.stringify(action.value)} on #${action.node_id}` };
+        }
+        // Fallback: set node property (for custom nodes that store data in properties)
+        if (node.properties && action.name in node.properties) {
+          node.properties[action.name] = action.value;
+          if (typeof node.onPropertyChanged === "function") {
+            try { node.onPropertyChanged(action.name, action.value); } catch {}
+          }
+          node.setDirtyCanvas?.(true, true);
+          return { ok: true, msg: `Set property ${action.name} on #${action.node_id}` };
+        }
+        return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id}` };
       }
       default:
         return { ok: false, msg: `Unknown action: ${action.action}` };

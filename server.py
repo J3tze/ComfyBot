@@ -62,6 +62,10 @@ For existing nodes already in the workflow, use their real node IDs.
 Always explain what you're changing before the action block. Use node IDs from the workflow JSON for existing nodes. \
 For new nodes, choose a position near related nodes.
 
+NOTE: set_widget works for standard ComfyUI widgets (dropdowns, numbers, text fields). \
+For complex custom node widgets (e.g. rgthree Power Lora Loader lora lists, complex UI panels), \
+set_widget may not work — tell the user to adjust those values manually and explain exactly what to change.
+
 ## Node types and their slots
 Use EXACTLY these slot names when connecting nodes:
 
