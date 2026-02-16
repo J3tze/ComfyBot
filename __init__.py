@@ -1,4 +1,4 @@
-"""ComfyUI Claude Assistant - AI-powered sidebar for graph manipulation."""
+"""ComfyBot - AI-powered sidebar for ComfyUI."""
 
 from .server import *
 

@@ -8,7 +8,7 @@ import { api } from "../../scripts/api.js";
 const STYLES = `
 /* ── Root ── */
 .claude-root {
-  display: flex; flex-direction: column; height: 100%;
+  display: flex; flex-direction: column; height: 100%; flex: 1; min-height: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--fg-color, #ddd); background: var(--bg-color, #1a1a1a);
 }
@@ -347,6 +347,7 @@ const STATE = {
   actionStore: {},          // actionId → actions array
   lastOutputImages: [],     // [{filename, subfolder, type}] from last execution
   pendingImages: [],        // [{base64, media_type, thumbnail_url}] to attach to next message
+  outputImageHistory: [],   // [{images: [...imgRefs], timestamp}] across executions
 };
 
 // Module-scoped DOM references (updated on each buildChatUI call)
@@ -358,6 +359,7 @@ const DOM = {
   errorBtn: null,
   imgAttachBtn: null,
   imgPreview: null,
+  batchBtn: null,
 };
 
 let _listenersRegistered = false;
@@ -574,6 +576,18 @@ function updateImagePreview() {
    GLOBAL EVENT LISTENERS (registered once)
    ═══════════════════════════════════════════════════════════════════ */
 
+function updateBatchButton() {
+  if (!DOM.batchBtn) return;
+  const runs = STATE.outputImageHistory.length;
+  if (runs >= 2) {
+    DOM.batchBtn.style.display = "";
+    const count = DOM.batchBtn.querySelector(".batch-count");
+    if (count) count.textContent = String(runs);
+  } else {
+    DOM.batchBtn.style.display = "none";
+  }
+}
+
 function registerGlobalListeners() {
   if (_listenersRegistered) return;
   _listenersRegistered = true;
@@ -590,6 +604,16 @@ function registerGlobalListeners() {
         subfolder: img.subfolder || "",
         type: img.type || "output",
       }));
+      // Accumulate for batch analyze
+      STATE.outputImageHistory.push({
+        images: STATE.lastOutputImages.slice(),
+        timestamp: Date.now(),
+      });
+      // Cap total images at 16
+      while (STATE.outputImageHistory.reduce((n, e) => n + e.images.length, 0) > 16) {
+        STATE.outputImageHistory.shift();
+      }
+      updateBatchButton();
       if (DOM.imgAttachBtn && STATE.pendingImages.length === 0) {
         DOM.imgAttachBtn.classList.add("has-images");
         DOM.imgAttachBtn.title = `Attach last output (${STATE.lastOutputImages.length} image${STATE.lastOutputImages.length > 1 ? "s" : ""})`;
@@ -599,12 +623,28 @@ function registerGlobalListeners() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   SCROLL HELPER
+   ═══════════════════════════════════════════════════════════════════ */
+
+function scrollToBottom(force = false) {
+  if (!DOM.messages) return;
+  const el = DOM.messages;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  if (force || nearBottom) el.scrollTop = el.scrollHeight;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    CHAT UI
    ═══════════════════════════════════════════════════════════════════ */
 
 function buildChatUI(el) {
   el.innerHTML = "";
   if (_nodeInterval) { clearInterval(_nodeInterval); _nodeInterval = null; }
+
+  // Ensure the parent container fills the full sidebar height
+  el.style.display = "flex";
+  el.style.flexDirection = "column";
+  el.style.height = "100%";
 
   const root = document.createElement("div");
   root.className = "claude-root";
@@ -674,6 +714,7 @@ function buildChatUI(el) {
     <button class="claude-quick-btn" data-prompt="Suggest optimizations for this workflow to improve quality, speed, or both. Be specific about which nodes/settings to change.">Optimize</button>
     <button class="claude-quick-btn" data-prompt="improve-prompts">Improve Prompts</button>
     <button class="claude-quick-btn" data-prompt="analyze-output">Analyze Output</button>
+    <button class="claude-quick-btn batch-btn" data-prompt="batch-analyze" style="display:none">Batch Analyze (<span class="batch-count">0</span>)</button>
     <button class="claude-quick-btn error-btn" data-prompt="fix-error" style="display:none">Fix Error</button>
   `;
 
@@ -719,6 +760,7 @@ function buildChatUI(el) {
   const imgAttachBtn = inputArea.querySelector(".claude-img-attach-btn");
   const workflowCheckbox = inputArea.querySelector(".claude-workflow-toggle input");
   const errorBtn = quickActions.querySelector('[data-prompt="fix-error"]');
+  const batchBtn = quickActions.querySelector('[data-prompt="batch-analyze"]');
 
   // Update module-scoped DOM refs
   DOM.messages = messages;
@@ -727,6 +769,7 @@ function buildChatUI(el) {
   DOM.errorBtn = errorBtn;
   DOM.imgAttachBtn = imgAttachBtn;
   DOM.imgPreview = imgPreview;
+  DOM.batchBtn = batchBtn;
 
   // ── Model dropdown
   function updateModelList(provider, currentModel) {
@@ -772,6 +815,7 @@ function buildChatUI(el) {
   if (STATE.lastError) errorBtn.style.display = "";
   if (STATE.lastOutputImages.length > 0) imgAttachBtn.classList.add("has-images");
   updateImagePreview();
+  updateBatchButton();
 
   // ── Settings events
   providerSelect.addEventListener("change", () => updateProviderUI(providerSelect.value));
@@ -785,8 +829,10 @@ function buildChatUI(el) {
   header.querySelector('[data-action="clear"]').addEventListener("click", () => {
     STATE.conversationHistory = [];
     STATE.actionStore = {};
+    STATE.outputImageHistory = [];
     messages.innerHTML = "";
     messages.appendChild(emptyState);
+    updateBatchButton();
   });
 
   saveBtn.addEventListener("click", async () => {
@@ -844,7 +890,7 @@ function buildChatUI(el) {
       msg.appendChild(textEl);
     }
     messages.appendChild(msg);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom(true);
     return msg;
   }
 
@@ -854,7 +900,7 @@ function buildChatUI(el) {
     el.className = "claude-msg assistant claude-typing";
     el.innerHTML = "<span></span><span></span><span></span>";
     messages.appendChild(el);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom(true);
     return el;
   }
 
@@ -880,6 +926,7 @@ function buildChatUI(el) {
         });
       }
     }
+    requestAnimationFrame(() => scrollToBottom(true));
   } else {
     messages.appendChild(emptyState);
   }
@@ -1025,6 +1072,25 @@ function buildChatUI(el) {
       prompt = `My workflow failed with this error. Help me diagnose and fix it:\n\n${errInfo}`;
       errorBtn.style.display = "none";
       STATE.lastError = null;
+    } else if (prompt === "batch-analyze") {
+      if (STATE.outputImageHistory.length < 2) return;
+      try {
+        const allRefs = STATE.outputImageHistory.flatMap((e) => e.images);
+        const images = [];
+        for (const imgRef of allRefs.slice(0, 16)) {
+          images.push(await fetchImageAsBase64(imgRef));
+        }
+        const runCount = STATE.outputImageHistory.length;
+        STATE.outputImageHistory = [];
+        updateBatchButton();
+        sendMessageText(
+          `Compare these ${images.length} images generated across ${runCount} workflow runs. Analyze differences in quality, composition, and artifacts. Identify what improved or regressed between generations, considering possible workflow changes, and suggest next steps.`,
+          images
+        );
+      } catch (err) {
+        addMessageToDOM("error", `Failed to fetch batch images: ${err.message}`);
+      }
+      return;
     } else if (prompt === "analyze-output") {
       if (STATE.lastOutputImages.length === 0) {
         addMessageToDOM("error", "No output images available. Run a workflow first.");
@@ -1045,7 +1111,11 @@ function buildChatUI(el) {
       return;
     }
 
-    sendMessageText(prompt);
+    // For text-only quick actions, populate textarea so user can add context
+    textarea.value = prompt;
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 140) + "px";
+    textarea.focus();
   });
 
   // ── Send message
@@ -1129,7 +1199,7 @@ function buildChatUI(el) {
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
                 const { html } = renderMarkdown(fullResponse);
                 DOM.streamingMsg.innerHTML = html;
-                if (DOM.messages) DOM.messages.scrollTop = DOM.messages.scrollHeight;
+                scrollToBottom();
               }
             } else if (data.type === "error") {
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
@@ -1159,7 +1229,7 @@ function buildChatUI(el) {
             }
           });
 
-          if (DOM.messages) DOM.messages.scrollTop = DOM.messages.scrollHeight;
+          scrollToBottom(true);
         }
       }
     } catch (err) {

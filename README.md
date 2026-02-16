@@ -1,6 +1,6 @@
 # ComfyBot - AI Assistant for ComfyUI
 
-An AI-powered sidebar extension for ComfyUI that lets you chat with Claude (or other models via OpenRouter) directly inside your workflow editor. Ask questions, get workflow advice, analyze outputs, and let the AI modify your graph.
+An AI-powered sidebar extension for ComfyUI that lets you chat with AI (Claude, GPT-4o, Gemini, and more via OpenRouter) directly inside your workflow editor. Ask questions, get workflow advice, analyze outputs, and let the AI modify your graph.
 
 ![ComfyUI Sidebar](https://img.shields.io/badge/ComfyUI-Sidebar_Extension-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)

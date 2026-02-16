@@ -1,4 +1,4 @@
-"""ComfyUI Claude Assistant - Server-side API routes."""
+"""ComfyBot - Server-side API routes."""
 
 import os
 import json
