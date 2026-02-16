@@ -121,6 +121,16 @@ const STYLES = `
   background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
   color: #fca5a5; font-size: 12px; max-width: 100%; border-radius: 8px;
 }
+.claude-retry-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: none; border: 1px solid rgba(255,255,255,0.08);
+  color: var(--fg-color, #aaa); cursor: pointer; padding: 3px 10px;
+  border-radius: 12px; font-size: 11px; font-family: inherit;
+  opacity: 0.4; transition: all 0.2s; margin-top: 6px;
+}
+.claude-retry-btn:hover { opacity: 0.9; border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
+.claude-msg.error .claude-retry-btn { color: #fca5a5; border-color: rgba(239,68,68,0.2); margin-top: 8px; opacity: 0.7; }
+.claude-msg.error .claude-retry-btn:hover { opacity: 1; background: rgba(239,68,68,0.08); }
 
 /* Markdown in assistant messages */
 .claude-msg.assistant p { margin: 0 0 8px 0; }
@@ -1134,6 +1144,40 @@ function buildChatUI(el) {
     return msg;
   }
 
+  function appendRetryButton(msgEl) {
+    const btn = document.createElement("button");
+    btn.className = "claude-retry-btn";
+    btn.innerHTML = '<i class="pi pi-refresh" style="font-size:10px;"></i> Retry';
+    btn.addEventListener("click", () => {
+      // Find the last user message in history
+      const lastUserIdx = STATE.conversationHistory.findLastIndex((m) => m.role === "user");
+      if (lastUserIdx < 0) return;
+      const lastUser = STATE.conversationHistory[lastUserIdx];
+      // Remove everything from the last user message onward
+      STATE.conversationHistory.splice(lastUserIdx);
+      // Remove corresponding DOM messages (user msg + assistant/error msgs after it)
+      const allMsgs = [...messages.querySelectorAll(".claude-msg")];
+      let removing = false;
+      for (const m of allMsgs) {
+        if (m.classList.contains("user") && !removing) {
+          // Find the last user msg DOM element
+          const nextSibling = m.nextElementSibling;
+          if (nextSibling && (nextSibling === msgEl || nextSibling.contains(msgEl) || msgEl.contains(nextSibling) || nextSibling === msgEl.parentElement)) {
+            removing = true;
+          }
+        }
+      }
+      // Simpler: just remove the assistant/error msg and the user msg before it
+      msgEl.remove();
+      const userMsgs = messages.querySelectorAll(".claude-msg.user");
+      const lastUserEl = userMsgs[userMsgs.length - 1];
+      if (lastUserEl) lastUserEl.remove();
+      // Re-send
+      sendMessageText(lastUser.content, lastUser.images);
+    });
+    msgEl.appendChild(btn);
+  }
+
   function addTypingIndicator() {
     if (emptyState.parentNode) emptyState.remove();
     const el = document.createElement("div");
@@ -1152,6 +1196,7 @@ function buildChatUI(el) {
       const msgEl = addMessageToDOM(entry.role, entry.content, entry.images);
       msgEl.dataset.historyIdx = String(i);
       // Restore applied action states
+      if (entry.role === "assistant") appendRetryButton(msgEl);
       if (entry.role === "assistant" && entry._appliedActions) {
         const cards = msgEl.querySelectorAll(".claude-action-card");
         cards.forEach((card, j) => {
@@ -1410,7 +1455,8 @@ function buildChatUI(el) {
       if (!res.ok) {
         const err = await res.json();
         if (typingEl.isConnected) typingEl.remove();
-        addMessageToDOM("error", err.error || `HTTP ${res.status}`);
+        const errMsg = addMessageToDOM("error", err.error || `HTTP ${res.status}`);
+        appendRetryButton(errMsg);
         STATE.conversationHistory.pop();
         STATE.isStreaming = false;
         STATE.streamingContent = "";
@@ -1449,7 +1495,8 @@ function buildChatUI(el) {
             } else if (data.type === "error") {
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
               DOM.streamingMsg = null;
-              addMessageToDOM("error", data.error);
+              const errMsg = addMessageToDOM("error", data.error);
+              appendRetryButton(errMsg);
               fullResponse = "";
             }
           } catch {}
@@ -1474,12 +1521,20 @@ function buildChatUI(el) {
             }
           });
 
+          // Add retry button
+          appendRetryButton(DOM.streamingMsg);
           scrollToBottom(true);
         }
+      } else {
+        // Empty response — treat as error
+        if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
+        const errMsg = addMessageToDOM("error", "Empty response from model");
+        appendRetryButton(errMsg);
       }
     } catch (err) {
       if (typingEl.isConnected) typingEl.remove();
-      addMessageToDOM("error", `Connection error: ${err.message}`);
+      const errMsg = addMessageToDOM("error", `Connection error: ${err.message}`);
+      appendRetryButton(errMsg);
     }
 
     STATE.isStreaming = false;

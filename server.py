@@ -334,7 +334,11 @@ async def stream_openrouter(response, api_key, model, messages, system):
                     err = json.loads(body)
                     error_msg = err.get("error", {}).get("message", body)
                 except json.JSONDecodeError:
-                    error_msg = body
+                    # Strip HTML error pages (e.g. Cloudflare 500 pages)
+                    if "<html" in body.lower():
+                        error_msg = f"OpenRouter returned HTTP {api_resp.status}. The service may be temporarily unavailable — try again."
+                    else:
+                        error_msg = body
                 await response.write(
                     f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n".encode("utf-8")
                 )
