@@ -357,7 +357,65 @@ const STYLES = `
 }
 .claude-send-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
 .claude-send-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
+
+/* ── Drag & drop overlay ── */
+.claude-messages.dragover {
+  outline: 2px dashed var(--p-primary-color, #4af);
+  outline-offset: -4px;
+  background: rgba(74,170,255,0.03);
+}
+
+/* ── Info feedback bubble ── */
+.claude-msg.info {
+  align-self: center; text-align: center;
+  background: rgba(74,170,255,0.06); border: 1px solid rgba(74,170,255,0.15);
+  color: var(--fg-color, #aaa); font-size: 11px;
+  max-width: 100%; border-radius: 8px; opacity: 0.7;
+}
+
+/* ── Token counter ── */
+.claude-token-info {
+  font-size: 10px; opacity: 0.3; text-align: right; padding: 0 2px; min-height: 14px;
+}
+.claude-token-info.warn { opacity: 0.6; color: #f59e0b; }
+
+/* ── Workflow changed indicator ── */
+.claude-workflow-indicator {
+  display: none; font-size: 10px; color: #f59e0b; opacity: 0.7; margin-left: 4px;
+}
+.claude-workflow-indicator.visible { display: inline; }
+
+/* ── Revert button ── */
+.claude-revert-btn {
+  margin-top: 4px; margin-left: 8px; padding: 4px 12px;
+  background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+  border-radius: 6px; color: #fca5a5; cursor: pointer;
+  font-size: 11px; font-family: inherit; transition: all 0.2s;
+}
+.claude-revert-btn:hover { background: rgba(239,68,68,0.15); }
+
+/* ── Custom instructions / memory textarea ── */
+.claude-custom-instructions, .claude-memory-textarea {
+  padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; background: rgba(255,255,255,0.04);
+  color: var(--input-text, #ddd); font-size: 12px; font-family: inherit;
+  resize: vertical; min-height: 60px; max-height: 200px;
+  width: 100%; box-sizing: border-box; transition: border-color 0.2s;
+}
+.claude-custom-instructions:focus, .claude-memory-textarea:focus {
+  border-color: var(--p-primary-color, #4af); outline: none;
+}
+
+/* ── Stripped image placeholder ── */
+.claude-msg-images .stripped-placeholder {
+  width: 48px; height: 48px; border-radius: 8px;
+  border: 1px dashed rgba(255,255,255,0.15);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; opacity: 0.3;
+}
 `;
+
+const STORAGE_KEY = "comfybot-conversation";
 
 /* ═══════════════════════════════════════════════════════════════════
    MODEL LISTS
@@ -406,6 +464,9 @@ const STATE = {
   outputImageHistory: [],   // [{images: [...imgRefs], timestamp}] across executions
   isFloating: false,        // whether the panel is popped out as floating
   floatingPos: null,        // {x, y} position of floating panel
+  _graphSnapshots: {},      // actionId → serialized graph (session-only, not persisted)
+  _lastWorkflowHash: null,  // hash of workflow when last sent
+  _chatGeneration: 0,       // incremented on clear — stale responses check this
 };
 
 // Module-scoped DOM references (updated on each buildChatUI call)
@@ -424,6 +485,90 @@ const DOM = {
 
 let _listenersRegistered = false;
 let _nodeInterval = null;
+
+/* ═══════════════════════════════════════════════════════════════════
+   PERSISTENCE & UTILITY HELPERS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function saveConversation() {
+  try {
+    const data = {
+      conversationHistory: STATE.conversationHistory.map(m => {
+        const entry = { ...m };
+        if (entry.images) {
+          entry.images = entry.images.map(img => ({
+            media_type: img.media_type,
+            thumbnail_url: img.thumbnail_url || null,
+            _stripped: true,
+          }));
+        }
+        return entry;
+      }),
+      actionStore: STATE.actionStore,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.warn("ComfyBot: Failed to save conversation", e);
+  }
+}
+
+function loadConversation() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.conversationHistory) STATE.conversationHistory = data.conversationHistory;
+    if (data.actionStore) STATE.actionStore = data.actionStore;
+  } catch (e) {
+    console.warn("ComfyBot: Failed to load conversation", e);
+  }
+}
+
+loadConversation();
+
+function estimateTokens(text) {
+  return Math.ceil((text || "").length / 4);
+}
+
+function getConversationTokens() {
+  let total = 0;
+  for (const m of STATE.conversationHistory) {
+    total += estimateTokens(m.content);
+  }
+  return total;
+}
+
+function simpleHash(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0xffffffff;
+  }
+  return hash;
+}
+
+function computeWorkflowDiff(before, after) {
+  const beforeNodes = new Map((before.nodes || []).map(n => [n.id, n]));
+  const afterNodes = new Map((after.nodes || []).map(n => [n.id, n]));
+  let added = 0, removed = 0, widgetChanges = [];
+  for (const [id, node] of afterNodes) {
+    if (!beforeNodes.has(id)) { added++; }
+    else {
+      const old = beforeNodes.get(id);
+      if (JSON.stringify(old.widgets_values || []) !== JSON.stringify(node.widgets_values || [])) {
+        widgetChanges.push(node.type || `#${id}`);
+      }
+    }
+  }
+  for (const id of beforeNodes.keys()) { if (!afterNodes.has(id)) removed++; }
+  const linkDelta = (after.links || []).length - (before.links || []).length;
+  const parts = [];
+  if (added) parts.push(`+${added} node${added > 1 ? "s" : ""}`);
+  if (removed) parts.push(`-${removed} node${removed > 1 ? "s" : ""}`);
+  if (widgetChanges.length) parts.push(`${widgetChanges.length} widget change${widgetChanges.length > 1 ? "s" : ""}`);
+  if (linkDelta > 0) parts.push(`+${linkDelta} connection${linkDelta > 1 ? "s" : ""}`);
+  if (linkDelta < 0) parts.push(`${linkDelta} connection${linkDelta < -1 ? "s" : ""}`);
+  return parts.length ? parts.join(", ") : "No structural changes detected";
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    GRAPH ACTION EXECUTOR
@@ -519,6 +664,10 @@ function executeGraphAction(action) {
         }
         return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id}` };
       }
+      case "update_memory": {
+        // Handled by the action card click handler (async fetch)
+        return { ok: true, msg: "Memory update queued" };
+      }
       default:
         return { ok: false, msg: `Unknown action: ${action.action}` };
     }
@@ -572,6 +721,7 @@ function describeAction(a) {
     case "connect": return `Connect #${a.from_node} → #${a.to_node}`;
     case "disconnect": return `Disconnect input on #${a.node_id}`;
     case "set_widget": return `Set ${a.name} = ${JSON.stringify(a.value)} on #${a.node_id}`;
+    case "update_memory": return "Update AI memory";
     default: return JSON.stringify(a);
   }
 }
@@ -779,6 +929,7 @@ function buildChatUI(el) {
   header.innerHTML = `
     <span class="claude-header-title">ComfyBot</span>
     <button class="claude-header-btn popout-btn" data-action="popout" title="Pop out to floating window"><i class="pi pi-external-link"></i></button>
+    <button class="claude-header-btn" data-action="export" title="Copy chat as markdown"><i class="pi pi-copy"></i></button>
     <button class="claude-header-btn" data-action="settings" title="Settings"><i class="pi pi-cog"></i></button>
     <button class="claude-header-btn" data-action="clear" title="Clear chat"><i class="pi pi-trash"></i></button>
   `;
@@ -819,6 +970,15 @@ function buildChatUI(el) {
     <div class="claude-settings-row">
       <label>Model</label>
       <select class="claude-model-select"></select>
+    </div>
+    <div class="claude-settings-row">
+      <label>Custom Instructions</label>
+      <textarea class="claude-custom-instructions" placeholder="Add custom instructions for the AI (e.g. preferred style, workflow preferences)..." rows="3"></textarea>
+    </div>
+    <div class="claude-settings-row">
+      <label>AI Memory</label>
+      <textarea class="claude-memory-textarea" placeholder="The AI can write notes here to remember across sessions..." rows="3" readonly></textarea>
+      <span class="claude-settings-hint">Managed by the AI — ask it to remember something</span>
     </div>
     <div class="claude-settings-actions">
       <button class="claude-btn claude-btn-primary claude-save-btn">Save</button>
@@ -869,7 +1029,9 @@ function buildChatUI(el) {
   inputArea.innerHTML = `
     <label class="claude-workflow-toggle">
       <input type="checkbox" ${STATE.includeWorkflow ? "checked" : ""}> Include current workflow as context
+      <span class="claude-workflow-indicator">~ changed</span>
     </label>
+    <div class="claude-token-info"></div>
     <div class="claude-input-row">
       <textarea class="claude-textarea" placeholder="Ask about your workflow..." rows="1"></textarea>
       <button class="claude-img-attach-btn" title="Attach last output image"><i class="pi pi-image"></i></button>
@@ -910,6 +1072,10 @@ function buildChatUI(el) {
   const batchBtn = quickActions.querySelector('[data-prompt="batch-analyze"]');
   const batchGroup = quickActions.querySelector(".claude-batch-group");
   const batchSelect = quickActions.querySelector(".claude-batch-select");
+  const customInstructionsEl = settings.querySelector(".claude-custom-instructions");
+  const memoryEl = settings.querySelector(".claude-memory-textarea");
+  const tokenInfoEl = inputArea.querySelector(".claude-token-info");
+  const workflowIndicator = inputArea.querySelector(".claude-workflow-indicator");
 
   // Update module-scoped DOM refs
   DOM.messages = messages;
@@ -921,6 +1087,8 @@ function buildChatUI(el) {
   DOM.batchBtn = batchBtn;
   DOM.batchGroup = batchGroup;
   DOM.batchSelect = batchSelect;
+  DOM.tokenInfo = tokenInfoEl;
+  DOM.workflowIndicator = workflowIndicator;
 
   // ── Model dropdown
   function updateModelList(provider, currentModel) {
@@ -957,6 +1125,15 @@ function buildChatUI(el) {
       if (cfg.bedrock_secret_preview) bedrockSecretInput.placeholder = `Current: ${cfg.bedrock_secret_preview}`;
       if (cfg.bedrock_region) bedrockRegionInput.value = cfg.bedrock_region;
       if (cfg.model) updateModelList(STATE.currentProvider, cfg.model);
+      if (cfg.custom_instructions) customInstructionsEl.value = cfg.custom_instructions;
+      // Load AI memory
+      try {
+        const memRes = await fetch("/claude-assistant/memory");
+        if (memRes.ok) {
+          const memData = await memRes.json();
+          if (memData.memory) memoryEl.value = memData.memory;
+        }
+      } catch {}
       if (!cfg.has_api_key) {
         STATE.settingsOpen = true;
         settings.classList.add("open");
@@ -976,6 +1153,36 @@ function buildChatUI(el) {
   updateImagePreview();
   updateBatchButton();
 
+  // ── Drag & drop images
+  messages.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    messages.classList.add("dragover");
+  });
+  messages.addEventListener("dragleave", (e) => {
+    if (!messages.contains(e.relatedTarget)) messages.classList.remove("dragover");
+  });
+  messages.addEventListener("drop", (e) => {
+    e.preventDefault();
+    messages.classList.remove("dragover");
+    const files = [...e.dataTransfer.files].filter(f =>
+      ["image/png", "image/jpeg", "image/webp"].includes(f.type)
+    ).slice(0, 4);
+    if (!files.length) return;
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (STATE.pendingImages.length >= 4) return;
+        STATE.pendingImages.push({
+          base64: reader.result.split(",")[1],
+          media_type: file.type,
+          thumbnail_url: reader.result,
+        });
+        updateImagePreview();
+      };
+      reader.readAsDataURL(file);
+    });
+  });
+
   // ── Settings events
   providerSelect.addEventListener("change", () => updateProviderUI(providerSelect.value));
 
@@ -989,9 +1196,34 @@ function buildChatUI(el) {
     STATE.conversationHistory = [];
     STATE.actionStore = {};
     STATE.outputImageHistory = [];
+    STATE._graphSnapshots = {};
+    STATE._chatGeneration++;
+    STATE.isStreaming = false;
+    STATE.streamingContent = "";
+    DOM.streamingMsg = null;
     messages.innerHTML = "";
     messages.appendChild(emptyState);
     updateBatchButton();
+    localStorage.removeItem(STORAGE_KEY);
+    updateTokenInfo();
+    sendBtn.disabled = false;
+  });
+
+  // ── Export
+  header.querySelector('[data-action="export"]').addEventListener("click", () => {
+    if (STATE.conversationHistory.length === 0) return;
+    const md = STATE.conversationHistory.map(m => {
+      const role = m._isSystemFeedback ? "System" : m.role === "user" ? "You" : "ComfyBot";
+      const imgs = m.images?.length ? `\n[${m.images.length} image${m.images.length > 1 ? "s" : ""} attached]\n` : "";
+      return `**${role}:**${imgs}\n${m.content}`;
+    }).join("\n\n---\n\n");
+    navigator.clipboard.writeText(md).then(() => {
+      const btn = header.querySelector('[data-action="export"]');
+      const icon = btn.querySelector("i");
+      icon.className = "pi pi-check";
+      btn.classList.add("active");
+      setTimeout(() => { icon.className = "pi pi-copy"; btn.classList.remove("active"); }, 1500);
+    });
   });
 
   // ── Pop out / Dock
@@ -1082,6 +1314,7 @@ function buildChatUI(el) {
 
   saveBtn.addEventListener("click", async () => {
     const body = { provider: providerSelect.value, model: modelSelect.value };
+    body.custom_instructions = customInstructionsEl.value.trim();
     if (openrouterKeyInput.value.trim()) body.openrouter_api_key = openrouterKeyInput.value.trim();
     if (anthropicKeyInput.value.trim()) body.anthropic_api_key = anthropicKeyInput.value.trim();
     if (bedrockAccessInput.value.trim()) body.bedrock_access_key = bedrockAccessInput.value.trim();
@@ -1106,7 +1339,22 @@ function buildChatUI(el) {
   textarea.addEventListener("input", () => {
     textarea.style.height = "auto";
     textarea.style.height = Math.min(textarea.scrollHeight, 140) + "px";
+    updateTokenInfo();
   });
+
+  function updateTokenInfo() {
+    if (!tokenInfoEl) return;
+    const inputTokens = estimateTokens(textarea.value);
+    const historyTokens = getConversationTokens();
+    let wfTokens = 0;
+    if (STATE.includeWorkflow) {
+      try { wfTokens = estimateTokens(JSON.stringify(app.graph?.serialize() || "")); } catch {}
+    }
+    const total = historyTokens + inputTokens + wfTokens;
+    tokenInfoEl.textContent = `~${total.toLocaleString()} tokens`;
+    tokenInfoEl.classList.toggle("warn", wfTokens > 5000);
+  }
+  updateTokenInfo();
 
   // ── Message helpers
   function addMessageToDOM(role, content, images) {
@@ -1116,12 +1364,13 @@ function buildChatUI(el) {
     if (role === "assistant") {
       const { html, actionBlocks } = renderMarkdown(content, { actionStore: STATE.actionStore });
       msg.innerHTML = html;
-      // Store action blocks by card data-action-id
       const cards = msg.querySelectorAll(".claude-action-card");
       cards.forEach((card, i) => {
         if (actionBlocks[i]) STATE.actionStore[card.dataset.actionId] = actionBlocks[i];
       });
     } else if (role === "error") {
+      msg.textContent = content;
+    } else if (role === "info") {
       msg.textContent = content;
     } else {
       // User message with optional images
@@ -1129,9 +1378,23 @@ function buildChatUI(el) {
         const imgContainer = document.createElement("div");
         imgContainer.className = "claude-msg-images";
         images.forEach((img) => {
-          const imgEl = document.createElement("img");
-          imgEl.src = img.thumbnail_url || `data:${img.media_type};base64,${img.base64}`;
-          imgContainer.appendChild(imgEl);
+          if (img._stripped) {
+            if (img.thumbnail_url) {
+              const imgEl = document.createElement("img");
+              imgEl.src = img.thumbnail_url;
+              imgEl.style.opacity = "0.5";
+              imgContainer.appendChild(imgEl);
+            } else {
+              const ph = document.createElement("div");
+              ph.className = "stripped-placeholder";
+              ph.innerHTML = '<i class="pi pi-image"></i>';
+              imgContainer.appendChild(ph);
+            }
+          } else {
+            const imgEl = document.createElement("img");
+            imgEl.src = img.thumbnail_url || `data:${img.media_type};base64,${img.base64}`;
+            imgContainer.appendChild(imgEl);
+          }
         });
         msg.appendChild(imgContainer);
       }
@@ -1155,6 +1418,7 @@ function buildChatUI(el) {
       const lastUser = STATE.conversationHistory[lastUserIdx];
       // Remove everything from the last user message onward
       STATE.conversationHistory.splice(lastUserIdx);
+      saveConversation();
       // Remove corresponding DOM messages (user msg + assistant/error msgs after it)
       const allMsgs = [...messages.querySelectorAll(".claude-msg")];
       let removing = false;
@@ -1193,7 +1457,8 @@ function buildChatUI(el) {
     emptyState.remove();
     for (let i = 0; i < STATE.conversationHistory.length; i++) {
       const entry = STATE.conversationHistory[i];
-      const msgEl = addMessageToDOM(entry.role, entry.content, entry.images);
+      const displayRole = entry._isSystemFeedback ? "info" : entry.role;
+      const msgEl = addMessageToDOM(displayRole, entry.content, entry.images);
       msgEl.dataset.historyIdx = String(i);
       // Restore applied action states
       if (entry.role === "assistant") appendRetryButton(msgEl);
@@ -1223,7 +1488,22 @@ function buildChatUI(el) {
   }
 
   // ── Action card click handler (delegated)
-  messages.addEventListener("click", (e) => {
+  messages.addEventListener("click", async (e) => {
+    // Handle revert button clicks
+    const revertBtn = e.target.closest(".claude-revert-btn");
+    if (revertBtn) {
+      const actionId = revertBtn.dataset.actionId;
+      const snapshot = STATE._graphSnapshots[actionId];
+      if (snapshot) {
+        app.graph.configure(snapshot);
+        app.graph.setDirtyCanvas(true, true);
+        revertBtn.textContent = "Reverted";
+        revertBtn.disabled = true;
+        revertBtn.style.opacity = "0.4";
+      }
+      return;
+    }
+
     const btn = e.target.closest(".claude-apply-btn");
     if (!btn || btn.disabled) return;
 
@@ -1237,10 +1517,51 @@ function buildChatUI(el) {
       return;
     }
 
-    const results = applyGraphActions(actions);
+    // Snapshot graph before applying (for undo + diff)
+    let beforeSnapshot = null;
+    try { beforeSnapshot = app.graph.serialize(); } catch {}
+    STATE._graphSnapshots[id] = beforeSnapshot;
+
+    // Separate memory actions from graph actions
+    const memoryActions = actions.filter(a => a.action === "update_memory");
+    const graphActions = actions.filter(a => a.action !== "update_memory");
+
+    const results = graphActions.length > 0 ? applyGraphActions(graphActions) : [];
+
+    // Process memory updates
+    for (const ma of memoryActions) {
+      try {
+        const res = await fetch("/claude-assistant/memory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ memory: ma.content || ma.value || "" }),
+        });
+        if (res.ok) {
+          results.push({ ok: true, msg: "AI memory updated" });
+          if (memoryEl) {
+            const memRes = await fetch("/claude-assistant/memory");
+            if (memRes.ok) { const d = await memRes.json(); memoryEl.value = d.memory || ""; }
+          }
+        } else {
+          results.push({ ok: false, msg: "Failed to update memory" });
+        }
+      } catch (err) {
+        results.push({ ok: false, msg: `Memory update error: ${err.message}` });
+      }
+    }
+
     btn.disabled = true;
     btn.classList.add("applied");
     btn.textContent = "Applied!";
+
+    // Compute workflow diff
+    let diffSummary = "";
+    if (beforeSnapshot && graphActions.length > 0) {
+      try {
+        const afterSnapshot = app.graph.serialize();
+        diffSummary = computeWorkflowDiff(beforeSnapshot, afterSnapshot);
+      } catch {}
+    }
 
     // Track applied state in history
     const msgEl = card.closest(".claude-msg.assistant");
@@ -1252,8 +1573,28 @@ function buildChatUI(el) {
       if (cardIdx >= 0) entry._appliedActions[cardIdx] = true;
     }
 
-    const summary = results.map((r) => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
-    resultEl.textContent = summary;
+    const succeeded = results.filter(r => r.ok).length;
+    const failed = results.filter(r => !r.ok).length;
+    let summaryText = results.map((r) => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
+    if (diffSummary) summaryText += `\nDiff: ${diffSummary}`;
+    resultEl.textContent = summaryText;
+
+    // Add revert button (only if we had graph actions)
+    if (beforeSnapshot && graphActions.length > 0) {
+      const rvBtn = document.createElement("button");
+      rvBtn.className = "claude-revert-btn";
+      rvBtn.dataset.actionId = id;
+      rvBtn.textContent = "Revert";
+      card.appendChild(rvBtn);
+    }
+
+    // Feed back applied results to AI
+    const actionSummary = graphActions.map(a => describeAction(a)).join(", ");
+    const feedbackText = `[Graph changes applied: ${succeeded} succeeded, ${failed} failed. Actions: ${actionSummary}${diffSummary ? ". Diff: " + diffSummary : ""}]`;
+    STATE.conversationHistory.push({ role: "user", content: feedbackText, _isSystemFeedback: true });
+    addMessageToDOM("info", feedbackText);
+    saveConversation();
+    updateTokenInfo();
   });
 
   // ── Image attach button
@@ -1316,6 +1657,16 @@ function buildChatUI(el) {
       } else if (ids.length !== 1 && STATE.selectedNode) {
         STATE.selectedNode = null;
         nodeCtx.classList.remove("visible");
+      }
+    } catch {}
+    // Workflow changed indicator
+    try {
+      if (STATE._lastWorkflowHash != null && workflowIndicator) {
+        const wf = app.graph?.serialize();
+        if (wf) {
+          const hash = simpleHash(JSON.stringify(wf));
+          workflowIndicator.classList.toggle("visible", hash !== STATE._lastWorkflowHash);
+        }
       }
     } catch {}
   }, 500);
@@ -1411,6 +1762,7 @@ function buildChatUI(el) {
   async function sendMessageText(text, images) {
     if (!text || STATE.isStreaming) return;
     STATE.isStreaming = true;
+    const gen = STATE._chatGeneration;
     sendBtn.disabled = true;
     textarea.value = "";
     textarea.style.height = "auto";
@@ -1424,26 +1776,58 @@ function buildChatUI(el) {
     const historyEntry = { role: "user", content: text };
     if (attachedImages) historyEntry.images = attachedImages;
     STATE.conversationHistory.push(historyEntry);
+    saveConversation();
 
     const typingEl = addTypingIndicator();
 
     try {
+      const rawMessages = STATE.conversationHistory.map((m) => {
+        const msg = { role: m.role, content: m.content };
+        // Skip stripped images (from localStorage restoration)
+        if (m.images && !m.images[0]?._stripped) {
+          msg.images = m.images.map((img) => ({
+            base64: img.base64,
+            media_type: img.media_type,
+          }));
+        }
+        return msg;
+      });
+      // Merge consecutive same-role messages for provider compatibility
+      const mergedMessages = [];
+      for (const msg of rawMessages) {
+        if (mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === msg.role) {
+          mergedMessages[mergedMessages.length - 1].content += "\n\n" + msg.content;
+        } else {
+          mergedMessages.push({ ...msg });
+        }
+      }
+      // Truncate to fit context window — keep most recent messages
+      const MAX_MSG_TOKENS = 80000;
+      let tokenBudget = 0;
+      let truncateAt = mergedMessages.length;
+      for (let i = mergedMessages.length - 1; i >= 0; i--) {
+        const t = estimateTokens(mergedMessages[i].content) + (mergedMessages[i].images ? mergedMessages[i].images.length * 1000 : 0);
+        if (tokenBudget + t > MAX_MSG_TOKENS) break;
+        tokenBudget += t;
+        truncateAt = i;
+      }
+      if (truncateAt > 0) mergedMessages.splice(0, truncateAt);
+      // Ensure first message is from user (required by Anthropic)
+      while (mergedMessages.length > 1 && mergedMessages[0].role !== "user") mergedMessages.shift();
       const body = {
         provider: STATE.currentProvider,
-        messages: STATE.conversationHistory.map((m) => {
-          const msg = { role: m.role, content: m.content };
-          if (m.images) {
-            msg.images = m.images.map((img) => ({
-              base64: img.base64,
-              media_type: img.media_type,
-            }));
-          }
-          return msg;
-        }),
+        messages: mergedMessages,
       };
       if (STATE.includeWorkflow) {
         const wf = getWorkflow();
-        if (wf) body.workflow = wf;
+        if (wf) {
+          body.workflow = wf;
+          STATE._lastWorkflowHash = simpleHash(JSON.stringify(wf));
+          if (workflowIndicator) workflowIndicator.classList.remove("visible");
+        }
+      }
+      if (customInstructionsEl?.value?.trim()) {
+        body.custom_instructions = customInstructionsEl.value.trim();
       }
 
       const res = await fetch("/claude-assistant/chat/stream", {
@@ -1458,6 +1842,7 @@ function buildChatUI(el) {
         const errMsg = addMessageToDOM("error", err.error || `HTTP ${res.status}`);
         appendRetryButton(errMsg);
         STATE.conversationHistory.pop();
+        saveConversation();
         STATE.isStreaming = false;
         STATE.streamingContent = "";
         if (DOM.sendBtn) DOM.sendBtn.disabled = false;
@@ -1475,6 +1860,8 @@ function buildChatUI(el) {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // Bail if chat was cleared during streaming
+        if (gen !== STATE._chatGeneration) { reader.cancel(); break; }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop();
@@ -1486,13 +1873,13 @@ function buildChatUI(el) {
             if (data.type === "text_delta") {
               fullResponse += data.text;
               STATE.streamingContent = fullResponse;
-              // Update DOM if still connected
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
                 const { html } = renderMarkdown(fullResponse);
                 DOM.streamingMsg.innerHTML = html;
                 scrollToBottom();
               }
             } else if (data.type === "error") {
+              if (gen !== STATE._chatGeneration) break;
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
               DOM.streamingMsg = null;
               const errMsg = addMessageToDOM("error", data.error);
@@ -1502,6 +1889,9 @@ function buildChatUI(el) {
           } catch {}
         }
       }
+
+      // Bail if chat was cleared during streaming
+      if (gen !== STATE._chatGeneration) return;
 
       // Final render with interactive action cards
       if (fullResponse) {
@@ -1525,6 +1915,7 @@ function buildChatUI(el) {
           appendRetryButton(DOM.streamingMsg);
           scrollToBottom(true);
         }
+        saveConversation();
       } else {
         // Empty response — treat as error
         if (DOM.streamingMsg && DOM.streamingMsg.isConnected) DOM.streamingMsg.remove();
@@ -1542,6 +1933,7 @@ function buildChatUI(el) {
     DOM.streamingMsg = null;
     if (DOM.sendBtn) DOM.sendBtn.disabled = false;
     if (DOM.textarea && DOM.textarea.isConnected) DOM.textarea.focus();
+    updateTokenInfo();
   }
 
   // ── Input events

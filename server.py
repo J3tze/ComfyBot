@@ -54,6 +54,7 @@ Available actions:
 - connect: Connect output→input. Fields: from_node, from_slot (output name), to_node, to_slot (input name)
 - disconnect: Disconnect an input. Fields: node_id, slot (input name)
 - set_widget: Change a widget value. Fields: node_id, name, value
+- update_memory: Save a note to persistent memory. Fields: content (text to save)
 
 IMPORTANT - When adding new nodes, always include an "id" field with a unique reference number. \
 Use these same reference numbers in connect/set_widget actions. The system will map them to actual node IDs. \
@@ -62,9 +63,11 @@ For existing nodes already in the workflow, use their real node IDs.
 Always explain what you're changing before the action block. Use node IDs from the workflow JSON for existing nodes. \
 For new nodes, choose a position near related nodes.
 
-NOTE: set_widget works for standard ComfyUI widgets (dropdowns, numbers, text fields). \
-For complex custom node widgets (e.g. rgthree Power Lora Loader lora lists, complex UI panels), \
-set_widget may not work — tell the user to adjust those values manually and explain exactly what to change.
+IMPORTANT: Always use comfyui-actions blocks for ANY workflow modification — adding nodes, changing settings, \
+connecting nodes, etc. Use set_widget for ALL standard widget changes (steps, cfg, seed, sampler_name, scheduler, \
+denoise, ckpt_name, lora_name, text, width, height, etc.). Never tell the user to manually change a value \
+that set_widget can handle. Only tell the user to manually adjust complex custom node widgets that have \
+non-standard UI (e.g. rgthree Power Lora Loader lora lists, custom visual panels).
 
 ## Node types and their slots
 Use EXACTLY these slot names when connecting nodes:
@@ -130,6 +133,11 @@ When the user sends generated images, analyze them carefully. Comment on:
 When suggesting LoRAs, checkpoints, or other models, ONLY suggest ones from the user's installed \
 models list (provided below). Do not suggest models the user doesn't have installed.
 
+## Memory
+You have persistent memory that survives across sessions. When the user asks you to remember something \
+(preferences, style, conventions, etc.), use the update_memory action in a comfyui-actions block to save it. \
+Your current memory (if any) is included in the system prompt above under "Persistent Memory".
+
 Keep responses concise and practical. Focus on actionable advice."""
 
 
@@ -187,9 +195,13 @@ def get_installed_models():
         return {}
 
 
-def build_system_with_workflow(workflow):
-    """Append workflow JSON and installed models to the system prompt."""
+def build_system_with_workflow(workflow, custom_instructions=None, memory=None):
+    """Append workflow JSON, installed models, custom instructions, and memory to the system prompt."""
     system = SYSTEM_PROMPT
+    if custom_instructions:
+        system = f"{custom_instructions}\n\n{system}"
+    if memory:
+        system += f"\n\n## Persistent Memory\nThese are notes you previously saved. Use them to personalize responses:\n{memory}"
     if workflow:
         workflow_str = json.dumps(workflow, indent=2)
         if len(workflow_str) > 50000:
@@ -209,6 +221,25 @@ def build_system_with_workflow(workflow):
                     system += f" ... and {len(files) - 50} more"
 
     return system
+
+
+def _memory_path():
+    return Path(__file__).parent / "memory.md"
+
+
+def load_memory():
+    mp = _memory_path()
+    if mp.exists():
+        try:
+            return mp.read_text(encoding="utf-8")
+        except IOError:
+            pass
+    return ""
+
+
+def save_memory(content):
+    mp = _memory_path()
+    mp.write_text(content, encoding="utf-8")
 
 
 def convert_messages_for_anthropic(messages):
@@ -402,7 +433,9 @@ async def chat_stream(request):
     messages = data.get("messages", [])
     workflow = data.get("workflow")
     model = data.get("model") or get_model()
-    system = build_system_with_workflow(workflow)
+    custom_instructions = data.get("custom_instructions") or config.get("custom_instructions", "")
+    memory = load_memory()
+    system = build_system_with_workflow(workflow, custom_instructions=custom_instructions, memory=memory)
 
     response = web.StreamResponse(
         status=200,
@@ -461,6 +494,7 @@ async def get_config(request):
         "bedrock_secret_preview": f"...{bedrock_secret[-4:]}" if len(bedrock_secret) > 4 else "",
         "bedrock_region": bedrock_region,
         "model": config.get("model", "anthropic/claude-sonnet-4.5"),
+        "custom_instructions": config.get("custom_instructions", ""),
     })
 
 
@@ -471,7 +505,8 @@ async def set_config(request):
     config = load_config()
 
     for key in ("provider", "model", "anthropic_api_key", "openrouter_api_key",
-                 "bedrock_access_key", "bedrock_secret_key", "bedrock_region"):
+                 "bedrock_access_key", "bedrock_secret_key", "bedrock_region",
+                 "custom_instructions"):
         if key in data:
             config[key] = data[key]
 
@@ -483,3 +518,17 @@ async def set_config(request):
 async def get_installed_models_endpoint(request):
     """Return lists of installed models (checkpoints, loras, etc.)."""
     return web.json_response(get_installed_models())
+
+
+@routes.get("/claude-assistant/memory")
+async def get_memory(request):
+    """Get persistent AI memory."""
+    return web.json_response({"memory": load_memory()})
+
+
+@routes.post("/claude-assistant/memory")
+async def set_memory(request):
+    """Update persistent AI memory."""
+    data = await request.json()
+    save_memory(data.get("memory", ""))
+    return web.json_response({"status": "ok"})

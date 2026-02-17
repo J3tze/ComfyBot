@@ -1,94 +1,110 @@
-# ComfyBot
+# CLAUDE.md
 
-AI-powered sidebar extension for ComfyUI with chat, graph manipulation, vision, error diagnosis, and prompt engineering. Supports **OpenRouter** (many models) and **Anthropic** (direct).
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+ComfyBot — AI-powered sidebar extension for ComfyUI. Chat with AI, manipulate graphs, analyze images, diagnose errors, engineer prompts. Includes conversation persistence, undo/revert, drag & drop images, AI memory, custom instructions, and more. No custom nodes, sidebar-only (`NODE_CLASS_MAPPINGS = {}`).
 
 ## Project Structure
 
 ```
-comfyui-claude-assistant/
-├── __init__.py          # ComfyUI entry point: exports WEB_DIRECTORY, NODE_CLASS_MAPPINGS
-├── server.py            # aiohttp API routes on PromptServer + streaming to OpenRouter/Anthropic
-├── web/
-│   └── extension.js     # Frontend: sidebar tab, chat UI, graph actions, vision, node context (CSS inlined)
-├── requirements.txt     # Python deps (anthropic SDK)
-├── README.md            # GitHub readme
-└── CLAUDE.md
+__init__.py          # Entry point: WEB_DIRECTORY = "./web", imports server.py
+server.py            # aiohttp API routes on PromptServer, streaming to 3 providers
+web/extension.js     # Single-file frontend: sidebar UI, CSS inlined, all features
+requirements.txt     # anthropic[bedrock]>=0.40.0
 ```
-
-## Features
-
-1. **Chat with AI** — streaming responses, markdown rendering, workflow context
-2. **Graph manipulation** — AI outputs `comfyui-actions` code blocks → parsed into "Apply" cards → executes LiteGraph API
-3. **Vision** — capture execution output images, send to AI for analysis (supports both Anthropic and OpenRouter image formats)
-4. **Quick actions** — "Analyze", "Optimize", "Improve Prompts", "Analyze Output", "Fix Error" preset buttons
-5. **Error capture** — hooks `api.addEventListener("execution_error")` → shows "Fix Error" button with traceback
-6. **Node context** — polls `app.canvas.selected_nodes` every 500ms → shows "Ask about this node" bar
-7. **Prompt helper** — extracts CLIPTextEncode widget values → sends to AI for SD prompt improvement
-8. **Installed models awareness** — backend reads `folder_paths` to list installed checkpoints, LoRAs, VAEs, etc. and includes them in the system prompt
-9. **State persistence** — conversation history, settings, and streaming state survive sidebar tab switches (module-scoped STATE object)
 
 ## Architecture
 
-- **No custom nodes** — sidebar-only extension (`NODE_CLASS_MAPPINGS = {}`)
-- **Server** (`server.py`): Routes on `PromptServer.instance.routes`. Two streaming backends:
-  - `stream_openrouter()` — raw aiohttp ClientSession to OpenRouter's OpenAI-compatible API
-  - `stream_anthropic()` — AsyncAnthropic SDK
-  - Both normalize to same SSE format: `data: {"type": "text_delta", "text": "..."}`
-  - `convert_messages_for_anthropic()` / `convert_messages_for_openrouter()` — handle image content in messages
-  - `get_installed_models()` — reads `folder_paths` for installed model lists
-  - `build_system_with_workflow()` — combines system prompt + workflow JSON + installed models
-- **Frontend** (`web/extension.js`): Single file, CSS inlined. Key sections:
-  - **Persistent STATE** — module-scoped object holding conversationHistory, streaming state, actionStore, lastOutputImages, pendingImages. Survives `render(el)` being called again on tab switch.
-  - **DOM refs** — module-scoped `DOM` object updated on each `buildChatUI()` call, so async streaming code can write to the latest DOM elements.
-  - **Graph action executor** — `executeGraphAction()` wraps LiteGraph API (add/remove/connect/set_widget)
-  - **Markdown renderer** — detects `comfyui-actions` code blocks → renders interactive action cards
-  - **Image helpers** — `fetchImageAsBase64()` fetches from ComfyUI `/view` endpoint, `updateImagePreview()` manages attachment UI
-  - **Global listeners** — registered once via `registerGlobalListeners()` for execution_error and executed events
-  - **Chat UI builder** — assembles all panels, rebuilds from STATE on tab switch, handles streaming
-- **Config persistence**: `/workspace/.claude-assistant-config.json` (RunPod) or `~/.claude-assistant-config.json`
+### Providers (server.py)
 
-## Graph Manipulation Format
+Three streaming backends, all normalize to SSE format `data: {"type": "text_delta", "text": "..."}`:
 
-The system prompt teaches the AI to output:
-````
-```comfyui-actions
-[
-  {"action": "add_node", "type": "KSampler", "pos": [500, 300], "widgets": {"steps": 30}},
-  {"action": "connect", "from_node": 4, "from_slot": "MODEL", "to_node": 3, "to_slot": "model"},
-  {"action": "set_widget", "node_id": 3, "name": "seed", "value": 42},
-  {"action": "remove_node", "node_id": 7},
-  {"action": "disconnect", "node_id": 5, "slot": "model"}
-]
-```
-````
-The frontend parses these after streaming completes, renders an action card with "Apply" button, and executes via LiteGraph API. Slot references support both names and indices. Applied actions are tracked in STATE.conversationHistory entries and visually persist across tab switches.
+| Provider | Function | Client | Auth |
+|----------|----------|--------|------|
+| OpenRouter | `stream_openrouter()` | raw aiohttp to OpenAI-compatible API | `OPENROUTER_API_KEY` |
+| Anthropic | `stream_anthropic()` | `AsyncAnthropic` SDK | `ANTHROPIC_API_KEY` |
+| Bedrock | `stream_bedrock()` | `AsyncAnthropicBedrock` SDK | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + region |
 
-## Vision / Image Flow
+Key server functions:
+- `convert_messages_for_anthropic()` / `convert_messages_for_openrouter()` — image content conversion
+- `build_system_with_workflow()` — combines SYSTEM_PROMPT + custom instructions + workflow JSON + installed models + AI memory
+- `get_installed_models()` — reads ComfyUI `folder_paths` for checkpoints, LoRAs, VAEs, etc.
+- `load_memory()` / `save_memory()` — persistent AI memory stored in `memory.md` (extension root)
 
-1. ComfyUI executes workflow → `executed` event fires → `STATE.lastOutputImages` updated with filenames
-2. User clicks "Analyze Output" quick action or image attach button → images fetched from `/view` endpoint → converted to base64
-3. Images sent to backend as `{base64, media_type}` in the `images` field of message objects
-4. Backend converts: Anthropic format (image content blocks) or OpenRouter format (image_url with data URI)
-5. AI analyzes the image and responds with feedback
+### Frontend (web/extension.js)
+
+Single file, CSS inlined at top. Key architectural patterns:
+
+- **Module-scoped STATE** — `const STATE = {...}` persists across sidebar tab switches (ComfyUI calls `render(el)` each time the tab is selected, destroying/rebuilding DOM). Holds conversationHistory, streaming state, actionStore, outputImageHistory, floatingPos, _graphSnapshots, _lastWorkflowHash.
+- **Module-scoped DOM** — `const DOM = {...}` updated on each `buildChatUI()` call so async streaming callbacks always write to the current DOM elements.
+- **Conversation persistence** — `saveConversation()` serializes history + actionStore to localStorage (base64 images stripped to save space; thumbnail_url preserved for display). `loadConversation()` restores on module init. Called after every history mutation.
+- **Node ID remapping** — `applyGraphActions()` maps AI-assigned temporary IDs to real LiteGraph IDs via `explicitMap` (from `add_node.id` field) and `positionMap` (sequential fallback).
+- **Widget callbacks** — `set_widget` triggers `w.callback()` and `node.onWidgetChanged()` so custom nodes react to value changes.
+- **Graph undo** — Before applying actions, graph is snapshotted via `app.graph.serialize()`. "Revert" button restores via `app.graph.configure()`. Snapshots are session-only (not in localStorage).
+- **Workflow diff** — `computeWorkflowDiff()` compares before/after serialized graphs, reports added/removed nodes, widget changes, connection deltas.
+- **AI feedback** — After applying graph actions, a feedback message is appended to conversationHistory as `role: "user"` with `_isSystemFeedback: true`, rendered as centered info bubble. Consecutive same-role messages are merged in API payloads for provider compatibility.
+- **Drag & drop** — Images dropped on the message area are read via FileReader, pushed to `STATE.pendingImages`, max 4 images.
+- **Token estimate** — `estimateTokens()` uses ~4 chars/token heuristic. Displays conversation + workflow token count in input area.
+- **Context truncation** — Before sending, messages are truncated to ~80k estimated tokens (oldest dropped first). Ensures first message is `role: "user"` for Anthropic compatibility. Full history stays in localStorage for display.
+- **Generation tracking** — `STATE._chatGeneration` counter incremented on clear. In-flight streaming responses check this to bail out if the chat was cleared mid-stream.
+- **Workflow changed indicator** — Hashes the serialized workflow on send, polls in the node-tracking interval, shows "~ changed" label when hash differs.
+- **Quick actions** — text-only actions populate the textarea (user can edit before sending); image-based actions (analyze-output, batch-analyze) send immediately.
+- **Floating panel** — pop-out button moves the chat root into a `position: fixed` draggable panel; leaves a placeholder in the sidebar.
+
+### Config Persistence
+
+File location: `/workspace/.claude-assistant-config.json` (RunPod) > `~/.claude-assistant-config.json` > `config.json` (extension dir).
+
+### AI Memory
+
+Persistent memory file: `memory.md` in the extension root. AI writes to it via `update_memory` action. Injected into system prompt. User can view (read-only) in settings panel.
 
 ## API Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/claude-assistant/chat/stream` | Stream chat response (SSE), supports image messages |
-| GET | `/claude-assistant/config` | Get config (masked API keys) |
-| POST | `/claude-assistant/config` | Save provider / API keys / model |
-| GET | `/claude-assistant/installed-models` | Get installed checkpoints, LoRAs, VAEs, etc. |
+| POST | `/claude-assistant/chat/stream` | SSE streaming chat (accepts `provider`, `messages`, `workflow`, `model`, `custom_instructions`) |
+| GET | `/claude-assistant/config` | Get config with masked API keys + custom_instructions |
+| POST | `/claude-assistant/config` | Save provider, API keys, model, Bedrock credentials, custom_instructions |
+| GET | `/claude-assistant/installed-models` | Installed checkpoints, LoRAs, VAEs, etc. |
+| GET | `/claude-assistant/memory` | Get persistent AI memory |
+| POST | `/claude-assistant/memory` | Update persistent AI memory |
 
-## Key JS APIs Used
+## ComfyUI Extension Patterns
 
-- `app.graph.serialize()` — get workflow JSON for context
+- Routes: `@routes.post("/path")` where `routes = PromptServer.instance.routes`
+- Sidebar: `app.extensionManager.registerSidebarTab()` in `setup()` hook
+- JS files in `WEB_DIRECTORY` root are auto-loaded (no recursion into subdirs)
+- Import: `import { app } from "../../scripts/app.js"` / `import { api } from "../../scripts/api.js"`
+- CSS vars: `--comfy-input-bg`, `--comfy-menu-bg`, `--border-color`, `--fg-color`, `--p-primary-color`
+
+## Graph Manipulation Format
+
+AI outputs `comfyui-actions` code blocks parsed into interactive "Apply" cards:
+````
+```comfyui-actions
+[
+  {"action": "add_node", "id": 1, "type": "KSampler", "pos": [500, 300], "widgets": {"steps": 30}},
+  {"action": "connect", "from_node": 1, "from_slot": "LATENT", "to_node": 6, "to_slot": "samples"},
+  {"action": "set_widget", "node_id": 3, "name": "seed", "value": 42},
+  {"action": "remove_node", "node_id": 7},
+  {"action": "disconnect", "node_id": 5, "slot": "model"},
+  {"action": "update_memory", "content": "User prefers anime style"}
+]
+```
+````
+The `id` field in `add_node` is a temporary reference — `applyGraphActions()` remaps it to the actual LiteGraph node ID for subsequent connect/set_widget actions. Slot references support both names and indices. The `update_memory` action is handled separately from graph actions (async POST to `/claude-assistant/memory`).
+
+## Key LiteGraph/ComfyUI JS APIs
+
+- `app.graph.serialize()` — workflow JSON for context
 - `LiteGraph.createNode(type)` / `app.graph.add(node)` — add nodes
-- `node.connect(outSlot, targetNode, inSlot)` — connect nodes
+- `node.connect(outSlot, targetNode, inSlot)` — connect
 - `app.graph.getNodeById(id)` — find nodes
-- `app.graph.setDirtyCanvas(true, true)` — force canvas re-render after changes
-- `app.canvas.selected_nodes` — track node selection
-- `api.addEventListener("execution_error", ...)` — capture errors
-- `api.addEventListener("executed", ...)` — capture output images
-- `app.extensionManager.registerSidebarTab(...)` — register the sidebar
-- `/view?filename=...&type=output` — fetch generated images for vision
+- `app.graph.setDirtyCanvas(true, true)` — force re-render
+- `app.graph.configure(data)` — restore graph from serialized snapshot (used by undo/revert)
+- `app.canvas.selected_nodes` — current selection
+- `api.addEventListener("execution_error"|"executed", ...)` — runtime events
+- `/view?filename=...&type=output` — fetch generated images
