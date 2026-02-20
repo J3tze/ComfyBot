@@ -2,6 +2,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 /* ═══════════════════════════════════════════════════════════════════
+   LOGO SVG
+   ═══════════════════════════════════════════════════════════════════ */
+
+const COMFYBOT_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#4aafff"/><stop offset="100%" style="stop-color:#a78bfa"/></linearGradient><linearGradient id="shine" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:rgba(255,255,255,0.3)"/><stop offset="100%" style="stop-color:rgba(255,255,255,0)"/></linearGradient></defs><rect x="16" y="20" width="96" height="72" rx="20" ry="20" fill="url(#bg)"/><path d="M 36 92 Q 30 108 22 112 Q 36 106 48 96 Z" fill="url(#bg)"/><rect x="16" y="20" width="96" height="72" rx="20" ry="20" fill="url(#shine)"/><ellipse cx="48" cy="52" rx="8" ry="9" fill="#fff"/><ellipse cx="50" cy="53" rx="4.5" ry="5" fill="#1a1a2e"/><circle cx="51.5" cy="50.5" r="2" fill="#fff"/><ellipse cx="80" cy="52" rx="8" ry="9" fill="#fff"/><ellipse cx="82" cy="53" rx="4.5" ry="5" fill="#1a1a2e"/><circle cx="83.5" cy="50.5" r="2" fill="#fff"/><path d="M 52 68 Q 64 78 76 68" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/><line x1="64" y1="20" x2="64" y2="8" stroke="url(#bg)" stroke-width="3" stroke-linecap="round"/><circle cx="64" cy="6" r="4" fill="#a78bfa"/><circle cx="64" cy="5" r="1.5" fill="#d4b5ff"/><circle cx="14" cy="40" r="3.5" fill="#4aafff" opacity="0.6"/><circle cx="14" cy="56" r="3.5" fill="#a78bfa" opacity="0.6"/><circle cx="114" cy="40" r="3.5" fill="#4aafff" opacity="0.6"/><circle cx="114" cy="56" r="3.5" fill="#a78bfa" opacity="0.6"/><line x1="17.5" y1="40" x2="22" y2="40" stroke="#4aafff" stroke-width="1.5" opacity="0.4"/><line x1="17.5" y1="56" x2="22" y2="56" stroke="#a78bfa" stroke-width="1.5" opacity="0.4"/><line x1="106" y1="40" x2="110.5" y2="40" stroke="#4aafff" stroke-width="1.5" opacity="0.4"/><line x1="106" y1="56" x2="110.5" y2="56" stroke="#a78bfa" stroke-width="1.5" opacity="0.4"/><ellipse cx="40" cy="66" rx="6" ry="3.5" fill="#ff8fab" opacity="0.3"/><ellipse cx="88" cy="66" rx="6" ry="3.5" fill="#ff8fab" opacity="0.3"/></svg>`;
+
+/* ═══════════════════════════════════════════════════════════════════
    CSS
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -414,6 +420,50 @@ const STYLES = `
   font-size: 18px; opacity: 0.3;
 }
 
+/* ── Iteration mode ── */
+.claude-iteration-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; margin: 0 0 8px 0;
+  background: rgba(74,170,255,0.08); border: 1px solid rgba(74,170,255,0.2);
+  border-radius: 8px; font-size: 11px; flex-shrink: 0;
+}
+.claude-iteration-banner-goal {
+  flex: 1; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.claude-iteration-banner-count { font-weight: 600; color: var(--p-primary-color, #4af); white-space: nowrap; }
+.claude-iteration-banner .claude-revert-btn { margin: 0; padding: 3px 10px; font-size: 10px; }
+.claude-iteration-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; margin: 6px 0 2px 0;
+  background: rgba(74,170,255,0.05); border: 1px solid rgba(74,170,255,0.12);
+  border-radius: 8px; font-size: 12px; align-self: stretch; max-width: 100%;
+}
+.claude-iteration-bar-count { font-size: 10px; font-weight: 600; color: var(--p-primary-color, #4af); white-space: nowrap; }
+.claude-iteration-bar input {
+  flex: 1; min-width: 0; padding: 5px 8px;
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 6px;
+  background: rgba(255,255,255,0.04); color: var(--input-text, #ddd);
+  font-size: 11px; font-family: inherit;
+}
+.claude-iteration-bar input:focus { border-color: var(--p-primary-color, #4af); outline: none; }
+.claude-iteration-bar input::placeholder { opacity: 0.35; }
+.claude-iteration-bar button {
+  padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05); color: var(--input-text, #ddd);
+  cursor: pointer; font-size: 11px; font-family: inherit; transition: all 0.15s; white-space: nowrap;
+}
+.claude-iteration-bar button:hover { background: rgba(255,255,255,0.1); }
+.claude-iteration-bar .iter-continue {
+  background: var(--p-primary-color, #4af); color: #fff; border-color: transparent; font-weight: 500;
+}
+.claude-iteration-bar .iter-continue:hover { filter: brightness(1.1); }
+.claude-iteration-bar .iter-stop { color: #fca5a5; border-color: rgba(239,68,68,0.2); }
+.claude-iteration-bar .iter-stop:hover { background: rgba(239,68,68,0.1); }
+.claude-quick-btn.iterate-btn.active {
+  background: rgba(74,170,255,0.15); border-color: var(--p-primary-color, #4af);
+  color: var(--p-primary-color, #4af);
+}
+
 `;
 
 const STORAGE_KEY = "comfybot-conversation";
@@ -469,6 +519,14 @@ const STATE = {
   _lastWorkflowHash: null,  // hash of workflow when last sent
   _chatGeneration: 0,       // incremented on clear — stale responses check this
   includeAnimeStyles: false,
+  iterationMode: false,
+  iterationGoal: "",
+  iterationCount: 0,
+  iterationMax: 5,
+  iterationSnapshot: null,       // graph state before iteration 1
+  _iterationAwaitingResult: false,
+  _iterationDebounce: null,
+  _iterationLastDiff: "",        // diff summary from last round
 };
 
 // Module-scoped DOM references (updated on each buildChatUI call)
@@ -487,6 +545,9 @@ const DOM = {
 
 let _listenersRegistered = false;
 let _nodeInterval = null;
+// Module-scoped iteration callbacks (set inside buildChatUI, called from global listeners)
+let _onIterationComplete = null;
+let _exitIteration = null;
 
 /* ═══════════════════════════════════════════════════════════════════
    PERSISTENCE & UTILITY HELPERS
@@ -728,6 +789,55 @@ function describeAction(a) {
   }
 }
 
+/**
+ * Apply an action card's actions to the graph.
+ * Returns { results, graphActions, memoryActions, beforeSnapshot, diffSummary, succeeded, failed }
+ */
+async function applyActionCardActions(actionId) {
+  const actions = STATE.actionStore[actionId];
+  if (!actions) return null;
+
+  let beforeSnapshot = null;
+  try { beforeSnapshot = app.graph.serialize(); } catch {}
+  STATE._graphSnapshots[actionId] = beforeSnapshot;
+
+  const memoryActions = actions.filter(a => a.action === "update_memory");
+  const graphActions = actions.filter(a => a.action !== "update_memory");
+
+  const results = graphActions.length > 0 ? applyGraphActions(graphActions) : [];
+
+  // Process memory updates
+  for (const ma of memoryActions) {
+    try {
+      const res = await fetch("/claude-assistant/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memory: ma.content || ma.value || "" }),
+      });
+      if (res.ok) {
+        results.push({ ok: true, msg: "AI memory updated" });
+      } else {
+        results.push({ ok: false, msg: "Failed to update memory" });
+      }
+    } catch (err) {
+      results.push({ ok: false, msg: `Memory update error: ${err.message}` });
+    }
+  }
+
+  let diffSummary = "";
+  if (beforeSnapshot && graphActions.length > 0) {
+    try {
+      const afterSnapshot = app.graph.serialize();
+      diffSummary = computeWorkflowDiff(beforeSnapshot, afterSnapshot);
+    } catch {}
+  }
+
+  const succeeded = results.filter(r => r.ok).length;
+  const failed = results.filter(r => !r.ok).length;
+
+  return { results, graphActions, memoryActions, beforeSnapshot, diffSummary, succeeded, failed, actionId };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    MARKDOWN RENDERER
    ═══════════════════════════════════════════════════════════════════ */
@@ -871,6 +981,12 @@ function registerGlobalListeners() {
   api.addEventListener("execution_error", ({ detail }) => {
     STATE.lastError = detail;
     if (DOM.errorBtn) DOM.errorBtn.style.display = "";
+    // Iteration mode: abort on execution error
+    if (STATE._iterationAwaitingResult) {
+      STATE._iterationAwaitingResult = false;
+      clearTimeout(STATE._iterationDebounce);
+      if (_exitIteration) _exitIteration("Execution error");
+    }
   });
 
   api.addEventListener("executed", ({ detail }) => {
@@ -893,6 +1009,14 @@ function registerGlobalListeners() {
       if (DOM.imgAttachBtn && STATE.pendingImages.length === 0) {
         DOM.imgAttachBtn.classList.add("has-images");
         DOM.imgAttachBtn.title = `Attach last output (${STATE.lastOutputImages.length} image${STATE.lastOutputImages.length > 1 ? "s" : ""})`;
+      }
+      // Iteration mode: debounce execution complete
+      if (STATE._iterationAwaitingResult) {
+        clearTimeout(STATE._iterationDebounce);
+        STATE._iterationDebounce = setTimeout(() => {
+          STATE._iterationAwaitingResult = false;
+          if (_onIterationComplete) _onIterationComplete();
+        }, 500);
       }
     }
   });
@@ -1020,6 +1144,7 @@ function buildChatUI(el) {
     <button class="claude-quick-btn" data-prompt="Suggest optimizations for this workflow to improve quality, speed, or both. Be specific about which nodes/settings to change.">Optimize</button>
     <button class="claude-quick-btn" data-prompt="improve-prompts">Improve Prompts</button>
     <button class="claude-quick-btn" data-prompt="analyze-output">Analyze Output</button>
+    <button class="claude-quick-btn iterate-btn" data-prompt="iterate">Iterate</button>
     <span class="claude-batch-group" style="display:none">
       <button class="claude-quick-btn batch-btn" data-prompt="batch-analyze">Batch Analyze</button>
       <select class="claude-batch-select" title="Number of recent runs to compare"></select>
@@ -1528,58 +1653,24 @@ function buildChatUI(el) {
     const card = btn.closest(".claude-action-card");
     const resultEl = card.querySelector(".claude-apply-result");
     const id = card.dataset.actionId;
-    const actions = STATE.actionStore[id];
 
-    if (!actions) {
+    const applied = await applyActionCardActions(id);
+    if (!applied) {
       resultEl.textContent = "Error: Could not find action data";
       return;
     }
 
-    // Snapshot graph before applying (for undo + diff)
-    let beforeSnapshot = null;
-    try { beforeSnapshot = app.graph.serialize(); } catch {}
-    STATE._graphSnapshots[id] = beforeSnapshot;
-
-    // Separate memory actions from graph actions
-    const memoryActions = actions.filter(a => a.action === "update_memory");
-    const graphActions = actions.filter(a => a.action !== "update_memory");
-
-    const results = graphActions.length > 0 ? applyGraphActions(graphActions) : [];
-
-    // Process memory updates
-    for (const ma of memoryActions) {
+    // Refresh memory textarea if memory was updated
+    if (applied.memoryActions.length > 0 && memoryEl) {
       try {
-        const res = await fetch("/claude-assistant/memory", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ memory: ma.content || ma.value || "" }),
-        });
-        if (res.ok) {
-          results.push({ ok: true, msg: "AI memory updated" });
-          if (memoryEl) {
-            const memRes = await fetch("/claude-assistant/memory");
-            if (memRes.ok) { const d = await memRes.json(); memoryEl.value = d.memory || ""; }
-          }
-        } else {
-          results.push({ ok: false, msg: "Failed to update memory" });
-        }
-      } catch (err) {
-        results.push({ ok: false, msg: `Memory update error: ${err.message}` });
-      }
+        const memRes = await fetch("/claude-assistant/memory");
+        if (memRes.ok) { const d = await memRes.json(); memoryEl.value = d.memory || ""; }
+      } catch {}
     }
 
     btn.disabled = true;
     btn.classList.add("applied");
     btn.textContent = "Applied!";
-
-    // Compute workflow diff
-    let diffSummary = "";
-    if (beforeSnapshot && graphActions.length > 0) {
-      try {
-        const afterSnapshot = app.graph.serialize();
-        diffSummary = computeWorkflowDiff(beforeSnapshot, afterSnapshot);
-      } catch {}
-    }
 
     // Track applied state in history
     const msgEl = card.closest(".claude-msg.assistant");
@@ -1591,14 +1682,12 @@ function buildChatUI(el) {
       if (cardIdx >= 0) entry._appliedActions[cardIdx] = true;
     }
 
-    const succeeded = results.filter(r => r.ok).length;
-    const failed = results.filter(r => !r.ok).length;
-    let summaryText = results.map((r) => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
-    if (diffSummary) summaryText += `\nDiff: ${diffSummary}`;
+    let summaryText = applied.results.map((r) => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
+    if (applied.diffSummary) summaryText += `\nDiff: ${applied.diffSummary}`;
     resultEl.textContent = summaryText;
 
     // Add revert button (only if we had graph actions)
-    if (beforeSnapshot && graphActions.length > 0) {
+    if (applied.beforeSnapshot && applied.graphActions.length > 0) {
       const rvBtn = document.createElement("button");
       rvBtn.className = "claude-revert-btn";
       rvBtn.dataset.actionId = id;
@@ -1607,8 +1696,8 @@ function buildChatUI(el) {
     }
 
     // Feed back applied results to AI
-    const actionSummary = graphActions.map(a => describeAction(a)).join(", ");
-    const feedbackText = `[Graph changes applied: ${succeeded} succeeded, ${failed} failed. Actions: ${actionSummary}${diffSummary ? ". Diff: " + diffSummary : ""}]`;
+    const actionSummary = applied.graphActions.map(a => describeAction(a)).join(", ");
+    const feedbackText = `[Graph changes applied: ${applied.succeeded} succeeded, ${applied.failed} failed. Actions: ${actionSummary}${applied.diffSummary ? ". Diff: " + applied.diffSummary : ""}]`;
     STATE.conversationHistory.push({ role: "user", content: feedbackText, _isSystemFeedback: true });
     addMessageToDOM("info", feedbackText);
     saveConversation();
@@ -1749,6 +1838,14 @@ function buildChatUI(el) {
         addMessageToDOM("error", `Failed to fetch batch images: ${err.message}`);
       }
       return;
+    } else if (prompt === "iterate") {
+      if (STATE.iterationMode) return;
+      STATE.iterationMode = true;
+      STATE.iterationCount = 0;
+      e.target.closest(".iterate-btn")?.classList.add("active");
+      textarea.placeholder = "Describe your goal (e.g. 'make the lighting more dramatic')...";
+      textarea.focus();
+      return;
     } else if (prompt === "analyze-output") {
       if (STATE.lastOutputImages.length === 0) {
         addMessageToDOM("error", "No output images available. Run a workflow first.");
@@ -1785,13 +1882,35 @@ function buildChatUI(el) {
     textarea.value = "";
     textarea.style.height = "auto";
 
+    // Iteration mode: wrap messages with context, keep display clean
+    let displayText = text;
+    const isIterationContinue = STATE.iterationMode && STATE.iterationCount > 0 && text.startsWith("[ITERATION MODE");
+    if (STATE.iterationMode && STATE.iterationCount === 0) {
+      // First message: user typed the goal
+      STATE.iterationGoal = text;
+      STATE.iterationSnapshot = app.graph.serialize();
+      STATE.iterationCount = 1;
+      showIterationBanner();
+      text = `[ITERATION MODE - Round 1/${STATE.iterationMax}]\n` +
+        `Goal: "${STATE.iterationGoal}"\n\n` +
+        `Analyze the current workflow and propose set_widget changes to achieve this goal.\n` +
+        `Use ONLY set_widget actions (no add_node, remove_node, connect, or disconnect).\n` +
+        `If the goal is already met, say "GOAL_MET" and explain why.\n` +
+        `Otherwise, output a comfyui-actions block with set_widget changes.`;
+      displayText = STATE.iterationGoal; // show the goal the user typed
+    }
+    if (isIterationContinue) {
+      // Continuation: don't show raw iteration context to user
+      displayText = null; // suppress user bubble for iteration messages
+    }
+
     // Collect attached images
     const attachedImages = images || (STATE.pendingImages.length > 0 ? [...STATE.pendingImages] : undefined);
     STATE.pendingImages = [];
     updateImagePreview();
 
-    addMessageToDOM("user", text, attachedImages);
-    const historyEntry = { role: "user", content: text };
+    if (displayText) addMessageToDOM("user", displayText, attachedImages);
+    const historyEntry = { role: "user", content: text, _isSystemFeedback: isIterationContinue };
     if (attachedImages) historyEntry.images = attachedImages;
     STATE.conversationHistory.push(historyEntry);
     saveConversation();
@@ -1935,6 +2054,43 @@ function buildChatUI(el) {
           // Add retry button
           appendRetryButton(DOM.streamingMsg);
           scrollToBottom(true);
+
+          // ── Auto-iteration: auto-apply + auto-queue
+          if (STATE.iterationMode && fullResponse) {
+            if (fullResponse.includes("GOAL_MET")) {
+              exitIterationMode("Goal achieved!");
+            } else if (actionBlocks && actionBlocks.length > 0) {
+              // Find the first action card and auto-apply it
+              const firstCard = DOM.streamingMsg.querySelector(".claude-action-card");
+              if (firstCard) {
+                const actionId = firstCard.dataset.actionId;
+                const applied = await applyActionCardActions(actionId);
+                if (applied) {
+                  // Mark card as applied visually
+                  const applyBtn = firstCard.querySelector(".claude-apply-btn");
+                  if (applyBtn) { applyBtn.disabled = true; applyBtn.classList.add("applied"); applyBtn.textContent = "Auto-applied"; }
+                  const resultEl = firstCard.querySelector(".claude-apply-result");
+                  if (resultEl) {
+                    let txt = applied.results.map(r => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
+                    if (applied.diffSummary) txt += `\nDiff: ${applied.diffSummary}`;
+                    resultEl.textContent = txt;
+                  }
+                  STATE._iterationLastDiff = applied.diffSummary || "";
+                  // Auto-queue prompt
+                  try { app.queuePrompt(0); } catch (qe) { console.warn("ComfyBot: Failed to queue prompt", qe); }
+                  STATE._iterationAwaitingResult = true;
+                  // Feedback: actions applied, waiting for execution
+                  const actionSummary = applied.graphActions.map(a => describeAction(a)).join(", ");
+                  const fb = `[Iteration ${STATE.iterationCount}/${STATE.iterationMax}: Applied ${applied.succeeded} changes, queued prompt. Actions: ${actionSummary}]`;
+                  STATE.conversationHistory.push({ role: "user", content: fb, _isSystemFeedback: true });
+                  addMessageToDOM("info", fb);
+                  saveConversation();
+                }
+              }
+            } else {
+              exitIterationMode("No actions proposed by AI");
+            }
+          }
         }
         saveConversation();
       } else {
@@ -1956,6 +2112,155 @@ function buildChatUI(el) {
     if (DOM.textarea && DOM.textarea.isConnected) DOM.textarea.focus();
     updateTokenInfo();
   }
+
+  // ── Iteration mode helpers
+  function showIterationBanner() {
+    // Remove existing banner if any
+    const existing = root.querySelector(".claude-iteration-banner");
+    if (existing) existing.remove();
+    const banner = document.createElement("div");
+    banner.className = "claude-iteration-banner";
+    banner.innerHTML = `
+      <span class="claude-iteration-banner-count">Iteration ${STATE.iterationCount}/${STATE.iterationMax}</span>
+      <span class="claude-iteration-banner-goal">${escapeHtml(STATE.iterationGoal)}</span>
+      <button class="claude-revert-btn" data-action="revert-all">Revert All</button>
+    `;
+    banner.querySelector('[data-action="revert-all"]').addEventListener("click", () => {
+      if (STATE.iterationSnapshot) {
+        app.graph.configure(STATE.iterationSnapshot);
+        app.graph.setDirtyCanvas(true, true);
+      }
+      exitIterationMode("Reverted to original");
+    });
+    messages.parentElement.insertBefore(banner, messages);
+  }
+
+  function updateIterationBanner() {
+    const countEl = root.querySelector(".claude-iteration-banner-count");
+    if (countEl) countEl.textContent = `Iteration ${STATE.iterationCount}/${STATE.iterationMax}`;
+  }
+
+  async function onIterationExecutionComplete() {
+    if (!STATE.iterationMode) return;
+    // Fetch output images
+    const outputImages = [];
+    try {
+      for (const imgRef of STATE.lastOutputImages.slice(0, 4)) {
+        outputImages.push(await fetchImageAsBase64(imgRef));
+      }
+    } catch (err) {
+      exitIterationMode("Failed to fetch output images: " + err.message);
+      return;
+    }
+    if (outputImages.length === 0) {
+      exitIterationMode("No output images produced");
+      return;
+    }
+
+    // Show output image in chat
+    addMessageToDOM("user", "[Iteration output]", outputImages);
+    STATE.conversationHistory.push({ role: "user", content: "[Iteration output]", images: outputImages, _isSystemFeedback: true });
+
+    // Show iteration control bar
+    const bar = document.createElement("div");
+    bar.className = "claude-iteration-bar";
+    bar.innerHTML = `
+      <span class="claude-iteration-bar-count">${STATE.iterationCount}/${STATE.iterationMax}</span>
+      <button class="iter-continue">Continue</button>
+      <input type="text" class="iter-feedback" placeholder="Add feedback (optional)...">
+      <button class="iter-stop">Stop</button>
+    `;
+    messages.appendChild(bar);
+    scrollToBottom(true);
+
+    const feedbackInput = bar.querySelector(".iter-feedback");
+    bar.querySelector(".iter-continue").addEventListener("click", () => {
+      const feedback = feedbackInput.value.trim();
+      bar.querySelectorAll("button").forEach(b => b.disabled = true);
+      feedbackInput.disabled = true;
+      continueIteration(feedback || null, outputImages);
+    });
+    bar.querySelector(".iter-stop").addEventListener("click", () => {
+      bar.querySelectorAll("button").forEach(b => b.disabled = true);
+      feedbackInput.disabled = true;
+      exitIterationMode("Stopped by user");
+    });
+    feedbackInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        bar.querySelector(".iter-continue").click();
+      }
+    });
+    feedbackInput.focus();
+  }
+
+  function continueIteration(feedback, outputImages) {
+    STATE.iterationCount++;
+    if (STATE.iterationCount > STATE.iterationMax) {
+      exitIterationMode(`Max iterations (${STATE.iterationMax}) reached`);
+      return;
+    }
+    updateIterationBanner();
+
+    const iterMsg = `[ITERATION MODE - Round ${STATE.iterationCount}/${STATE.iterationMax}]\n` +
+      `Goal: "${STATE.iterationGoal}"\n` +
+      (feedback ? `User feedback: "${feedback}"\n` : "") +
+      (STATE._iterationLastDiff ? `Changes applied last round: ${STATE._iterationLastDiff}\n` : "") +
+      `\nAnalyze the output image. If the goal is met, say "GOAL_MET" and explain why.\n` +
+      `Otherwise, propose set_widget changes in a comfyui-actions block.`;
+
+    sendMessageText(iterMsg, outputImages);
+  }
+
+  function exitIterationMode(reason) {
+    const wasActive = STATE.iterationMode;
+    const rounds = STATE.iterationCount;
+    STATE.iterationMode = false;
+    STATE.iterationCount = 0;
+    STATE.iterationGoal = "";
+    STATE._iterationAwaitingResult = false;
+    STATE._iterationLastDiff = "";
+    clearTimeout(STATE._iterationDebounce);
+
+    // Remove banner
+    const banner = root.querySelector(".claude-iteration-banner");
+    if (banner) banner.remove();
+
+    // Reset iterate button
+    const iterBtn = root.querySelector(".iterate-btn");
+    if (iterBtn) iterBtn.classList.remove("active");
+
+    // Reset textarea placeholder
+    if (textarea) textarea.placeholder = "Ask about your workflow...";
+
+    if (wasActive) {
+      const msg = `[Iteration complete: ${reason} (${rounds} round${rounds !== 1 ? "s" : ""})]`;
+      STATE.conversationHistory.push({ role: "user", content: msg, _isSystemFeedback: true });
+      addMessageToDOM("info", msg);
+
+      // Add "Revert all" button if we have a snapshot
+      if (STATE.iterationSnapshot) {
+        const revertMsg = document.createElement("div");
+        revertMsg.className = "claude-msg info";
+        revertMsg.style.cssText = "text-align:center; cursor:pointer; opacity:0.6;";
+        revertMsg.innerHTML = `<button class="claude-revert-btn">Revert all iteration changes</button>`;
+        revertMsg.querySelector(".claude-revert-btn").addEventListener("click", () => {
+          app.graph.configure(STATE.iterationSnapshot);
+          app.graph.setDirtyCanvas(true, true);
+          revertMsg.querySelector(".claude-revert-btn").textContent = "Reverted";
+          revertMsg.querySelector(".claude-revert-btn").disabled = true;
+          STATE.iterationSnapshot = null;
+        });
+        messages.appendChild(revertMsg);
+      }
+      saveConversation();
+      scrollToBottom(true);
+    }
+  }
+
+  // Update module-scoped iteration callbacks so global listeners can call them
+  _onIterationComplete = onIterationExecutionComplete;
+  _exitIteration = exitIterationMode;
 
   // ── Input events
   sendBtn.addEventListener("click", () => sendMessageText(textarea.value.trim()));
@@ -1984,12 +2289,20 @@ app.registerExtension({
 
   async setup() {
     const style = document.createElement("style");
-    style.textContent = STYLES;
+    const encodedLogo = encodeURIComponent(COMFYBOT_LOGO);
+    style.textContent = STYLES + `
+      i.comfybot-logo {
+        display: inline-block;
+        width: 1.2em;
+        height: 1.2em;
+        background: url("data:image/svg+xml,${encodedLogo}") center/contain no-repeat;
+      }
+    `;
     document.head.appendChild(style);
 
     app.extensionManager.registerSidebarTab({
       id: "comfybot",
-      icon: "pi pi-comments",
+      icon: "comfybot-logo",
       title: "ComfyBot",
       tooltip: "ComfyBot - AI Assistant",
       type: "custom",

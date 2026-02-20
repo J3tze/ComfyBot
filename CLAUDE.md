@@ -11,10 +11,12 @@ ComfyBot — AI-powered sidebar extension for ComfyUI. Chat with AI, manipulate 
 ```
 __init__.py          # Entry point: WEB_DIRECTORY = "./web", imports server.py
 server.py            # aiohttp API routes on PromptServer, streaming to 3 providers
-web/extension.js     # Single-file frontend: sidebar UI, CSS inlined, all features
+web/extension.js     # Single-file frontend (~2300 lines): sidebar UI, CSS inlined, all features
 requirements.txt     # anthropic[bedrock]>=0.40.0
 logo.svg             # Sidebar tab icon
 memory.md            # Persistent AI memory (written at runtime via update_memory action)
+anime_styles.json    # Danbooru anime artist tags (loaded on demand, cached)
+sdxl_styles.json     # SDXL artist style tags with descriptions (loaded on demand, cached)
 ```
 
 ## Development
@@ -45,13 +47,29 @@ Three streaming backends, all normalize to SSE format `data: {"type": "text_delt
 Key server functions:
 - `SYSTEM_PROMPT` — large inline string defining ComfyBot's persona, action format, node slot reference, and prompt engineering guidance
 - `convert_messages_for_anthropic()` / `convert_messages_for_openrouter()` — image content conversion
-- `build_system_with_workflow()` — combines SYSTEM_PROMPT + custom instructions + workflow JSON + installed models + AI memory
+- `build_system_with_workflow()` — combines SYSTEM_PROMPT + custom instructions + workflow JSON + installed models + AI memory + optional artist style tags
 - `get_installed_models()` — reads ComfyUI `folder_paths` for checkpoints, LoRAs, VAEs, etc.
 - `load_memory()` / `save_memory()` — persistent AI memory stored in `memory.md` (extension root)
+- `load_anime_styles()` / `load_sdxl_styles()` — cached loaders for artist tag JSON files, injected into system prompt when `include_anime_styles` config is enabled
 
 ### Frontend (web/extension.js)
 
-Single file, CSS inlined at top. Model lists are hardcoded as `ANTHROPIC_MODELS`, `OPENROUTER_MODELS`, `BEDROCK_MODELS` constants. Conversation stored in `localStorage` under key `comfybot-conversation`.
+Single file (~2300 lines), CSS inlined at top. Organized into labeled sections with `/* ═══ */` delimiters:
+
+| Section | Approx. Lines | Contents |
+|---------|--------------|----------|
+| CSS | 1–462 | All styles in `STYLES` template literal |
+| Model Lists | 463–491 | `ANTHROPIC_MODELS`, `OPENROUTER_MODELS`, `BEDROCK_MODELS` arrays |
+| Persistent State | 493–542 | `STATE` and `DOM` module-scoped objects |
+| Conversation Persistence | 546–628 | `saveConversation()`, `loadConversation()`, `estimateTokens()`, `simpleHash()`, `computeWorkflowDiff()` |
+| Graph Actions | 630–833 | `executeGraphAction()`, `applyGraphActions()`, `applyActionCardActions()` |
+| Markdown Rendering | 835–897 | `renderMarkdown()` with code block + action card parsing |
+| Image Handling | 899–947 | `fetchImageAsBase64()`, `updateImagePreview()` |
+| Global Listeners | 949–1021 | `registerGlobalListeners()` — error capture, execution events, node tracking interval |
+| UI Building | 1023–2275 | `buildChatUI(el)` — the main function that builds all DOM, handles streaming, settings, quick actions, iteration mode |
+| Extension Registration | 2277–2298 | `app.registerExtension()` + `registerSidebarTab()` |
+
+Model lists are hardcoded constants — update them when adding new models. Conversation stored in `localStorage` under key `comfybot-conversation`.
 
 Key architectural patterns:
 
@@ -63,6 +81,7 @@ Key architectural patterns:
 - **Graph undo** — Before applying actions, graph is snapshotted via `app.graph.serialize()`. "Revert" button restores via `app.graph.configure()`. Snapshots are session-only (not in localStorage).
 - **Workflow diff** — `computeWorkflowDiff()` compares before/after serialized graphs, reports added/removed nodes, widget changes, connection deltas.
 - **AI feedback** — After applying graph actions, a feedback message is appended to conversationHistory as `role: "user"` with `_isSystemFeedback: true`, rendered as centered info bubble. Consecutive same-role messages are merged in API payloads for provider compatibility.
+- **Iteration mode** — Automated apply-and-refine loop. User sets a goal and max rounds (`STATE.iterationMode`, `iterationGoal`, `iterationMax`). Each round: AI suggests changes → auto-apply → queue prompt → capture output → send diff + output back to AI. `_iterationAwaitingResult` gates the loop; `iterationSnapshot` stores the graph before iteration 1 for full revert.
 - **Drag & drop** — Images dropped on the message area are read via FileReader, pushed to `STATE.pendingImages`, max 4 images.
 - **Token estimate** — `estimateTokens()` uses ~4 chars/token heuristic. Displays conversation + workflow token count in input area.
 - **Context truncation** — Before sending, messages are truncated to ~80k estimated tokens (oldest dropped first). Ensures first message is `role: "user"` for Anthropic compatibility. Full history stays in localStorage for display.
