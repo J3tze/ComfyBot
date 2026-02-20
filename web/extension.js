@@ -733,20 +733,58 @@ function executeGraphAction(action) {
           return null;
         }
 
-        const w = resolveWidget(action.name);
-        if (w) {
-          w.value = action.value;
+        // Helper: apply value to a widget, handling object-valued widgets (e.g. Power Lora Loader)
+        function applyWidgetValue(w, value) {
+          if (w.value && typeof w.value === "object" && typeof value !== "object") {
+            // Object-valued widget — merge into the right field instead of replacing
+            if (typeof value === "string" && (value.endsWith(".safetensors") || value.endsWith(".ckpt") || value.endsWith(".pt"))) {
+              // Model/lora filename → update the lora/name field
+              if ("lora" in w.value) { w.value = { ...w.value, lora: value, on: true }; return; }
+              if ("name" in w.value) { w.value = { ...w.value, name: value }; return; }
+            }
+            if (typeof value === "number") {
+              // Numeric value → update strength fields
+              if ("strength" in w.value) { w.value = { ...w.value, strength: value, strengthTwo: value }; return; }
+            }
+          }
+          w.value = value;
+        }
+
+        function commitWidget(w) {
           if (typeof w.callback === "function") {
             try { w.callback(w.value, app.canvas, node, null, {}); } catch {}
           }
           if (typeof node.onWidgetChanged === "function") {
-            try { node.onWidgetChanged(w.name, action.value, w); } catch {}
+            try { node.onWidgetChanged(w.name, w.value, w); } catch {}
           }
           node.setDirtyCanvas?.(true, true);
+        }
+
+        let w = resolveWidget(action.name);
+        if (w) {
+          applyWidgetValue(w, action.value);
+          commitWidget(w);
           return { ok: true, msg: `Set ${w.name}=${JSON.stringify(action.value)} on #${action.node_id}` };
         }
+
+        // Fallback for "strength" on nodes with object-valued lora widgets (e.g. Power Lora Loader)
+        const lowerName = action.name.toLowerCase();
+        if (!w && (lowerName.includes("strength") || lowerName.includes("weight"))) {
+          const loraSlot = widgets.find(ww =>
+            /^lora[_\s]?\d/i.test(ww.name) && ww.value && typeof ww.value === "object" && "strength" in ww.value
+          );
+          if (loraSlot) {
+            const s = typeof action.value === "number" ? action.value : parseFloat(action.value);
+            if (!isNaN(s)) {
+              loraSlot.value = { ...loraSlot.value, strength: s, strengthTwo: s };
+              commitWidget(loraSlot);
+              return { ok: true, msg: `Set strength=${s} on ${loraSlot.name} #${action.node_id}` };
+            }
+          }
+        }
+
         // Fallback: set node property (for custom nodes that store data in properties)
-        const propName = Object.keys(node.properties || {}).find(k => k.toLowerCase() === action.name.toLowerCase());
+        const propName = Object.keys(node.properties || {}).find(k => k.toLowerCase() === lowerName);
         if (propName) {
           node.properties[propName] = action.value;
           if (typeof node.onPropertyChanged === "function") {
