@@ -67,6 +67,8 @@ const STYLES = `
 }
 .claude-settings-row { display: flex; flex-direction: column; gap: 4px; }
 .claude-settings-row.hidden { display: none; }
+.claude-custom-model-input.hidden { display: none; }
+.claude-custom-model-input { margin-top: 6px; }
 .claude-settings-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
 .claude-settings-status { font-size: 11px; opacity: 0.6; flex: 1; }
 .claude-settings-hint { font-size: 11px; opacity: 0.35; margin-top: 2px; }
@@ -483,10 +485,18 @@ const OPENROUTER_MODELS = [
   { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5" },
   { id: "openai/gpt-4o", name: "GPT-4o" },
   { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
+  { id: "openai/o3", name: "o3" },
+  { id: "openai/o4-mini", name: "o4-mini" },
   { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+  { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
   { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash" },
   { id: "deepseek/deepseek-chat-v3-0324", name: "DeepSeek V3" },
+  { id: "deepseek/deepseek-r1", name: "DeepSeek R1" },
   { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick" },
+  { id: "meta-llama/llama-4-scout", name: "Llama 4 Scout" },
+  { id: "qwen/qwen3-235b-a22b", name: "Qwen3 235B" },
+  { id: "mistralai/mistral-large-2411", name: "Mistral Large" },
+  { id: "_custom", name: "Custom model ID..." },
 ];
 const BEDROCK_MODELS = [
   { id: "global.anthropic.claude-opus-4-6-v1", name: "Claude Opus 4.6" },
@@ -518,7 +528,6 @@ const STATE = {
   _graphSnapshots: {},      // actionId → serialized graph (session-only, not persisted)
   _lastWorkflowHash: null,  // hash of workflow when last sent
   _chatGeneration: 0,       // incremented on clear — stale responses check this
-  includeAnimeStyles: false,
   iterationMode: false,
   iterationGoal: "",
   iterationCount: 0,
@@ -1096,6 +1105,7 @@ function buildChatUI(el) {
     <div class="claude-settings-row">
       <label>Model</label>
       <select class="claude-model-select"></select>
+      <input type="text" class="claude-custom-model-input hidden" placeholder="e.g. anthropic/claude-sonnet-4.5" spellcheck="false" autocomplete="off">
     </div>
     <div class="claude-settings-row">
       <label>Custom Instructions</label>
@@ -1105,12 +1115,6 @@ function buildChatUI(el) {
       <label>AI Memory</label>
       <textarea class="claude-memory-textarea" placeholder="The AI can write notes here to remember across sessions..." rows="3" readonly></textarea>
       <span class="claude-settings-hint">Managed by the AI — ask it to remember something</span>
-    </div>
-    <div class="claude-settings-row">
-      <label class="claude-workflow-toggle claude-anime-styles-toggle">
-        <input type="checkbox" class="claude-anime-styles-checkbox"> Include anime artist style tags for AI suggestions
-      </label>
-      <span class="claude-settings-hint">Adds ~2,000 SDXL artist styles with descriptions + 500 anime tags (~20k tokens)</span>
     </div>
     <div class="claude-settings-actions">
       <button class="claude-btn claude-btn-primary claude-save-btn">Save</button>
@@ -1195,6 +1199,7 @@ function buildChatUI(el) {
   const bedrockSecretRow = settings.querySelector(".claude-row-bedrock-secret");
   const bedrockRegionRow = settings.querySelector(".claude-row-bedrock-region");
   const modelSelect = settings.querySelector(".claude-model-select");
+  const customModelInput = settings.querySelector(".claude-custom-model-input");
   const saveBtn = settings.querySelector(".claude-save-btn");
   const statusEl = settings.querySelector(".claude-settings-status");
   const textarea = inputArea.querySelector(".claude-textarea");
@@ -1207,7 +1212,6 @@ function buildChatUI(el) {
   const batchSelect = quickActions.querySelector(".claude-batch-select");
   const customInstructionsEl = settings.querySelector(".claude-custom-instructions");
   const memoryEl = settings.querySelector(".claude-memory-textarea");
-  const animeStylesCheckbox = settings.querySelector(".claude-anime-styles-checkbox");
   const tokenInfoEl = inputArea.querySelector(".claude-token-info");
   const workflowIndicator = inputArea.querySelector(".claude-workflow-indicator");
 
@@ -1230,8 +1234,29 @@ function buildChatUI(el) {
                  : provider === "bedrock" ? BEDROCK_MODELS
                  : OPENROUTER_MODELS;
     modelSelect.innerHTML = models.map((m) => `<option value="${m.id}">${m.name}</option>`).join("");
-    if (currentModel && models.some((m) => m.id === currentModel)) modelSelect.value = currentModel;
+    // If currentModel isn't in the list (custom ID), select "_custom" and populate the input
+    if (currentModel && !models.some((m) => m.id === currentModel)) {
+      if (models.some((m) => m.id === "_custom")) {
+        modelSelect.value = "_custom";
+        customModelInput.value = currentModel;
+        customModelInput.classList.remove("hidden");
+      }
+    } else {
+      if (currentModel) modelSelect.value = currentModel;
+      customModelInput.classList.add("hidden");
+      customModelInput.value = "";
+    }
   }
+
+  modelSelect.addEventListener("change", () => {
+    if (modelSelect.value === "_custom") {
+      customModelInput.classList.remove("hidden");
+      customModelInput.focus();
+    } else {
+      customModelInput.classList.add("hidden");
+      customModelInput.value = "";
+    }
+  });
 
   function updateProviderUI(provider) {
     STATE.currentProvider = provider;
@@ -1260,10 +1285,6 @@ function buildChatUI(el) {
       if (cfg.bedrock_region) bedrockRegionInput.value = cfg.bedrock_region;
       if (cfg.model) updateModelList(STATE.currentProvider, cfg.model);
       if (cfg.custom_instructions) customInstructionsEl.value = cfg.custom_instructions;
-      if (cfg.include_anime_styles) {
-        animeStylesCheckbox.checked = true;
-        STATE.includeAnimeStyles = true;
-      }
       // Load AI memory
       try {
         const memRes = await fetch("/claude-assistant/memory");
@@ -1328,10 +1349,6 @@ function buildChatUI(el) {
     STATE.settingsOpen = !STATE.settingsOpen;
     settings.classList.toggle("open", STATE.settingsOpen);
     header.querySelector('[data-action="settings"]').classList.toggle("active", STATE.settingsOpen);
-  });
-
-  animeStylesCheckbox.addEventListener("change", () => {
-    STATE.includeAnimeStyles = animeStylesCheckbox.checked;
   });
 
   header.querySelector('[data-action="clear"]').addEventListener("click", () => {
@@ -1455,9 +1472,10 @@ function buildChatUI(el) {
   if (STATE.isFloating) popOut();
 
   saveBtn.addEventListener("click", async () => {
-    const body = { provider: providerSelect.value, model: modelSelect.value };
+    const model = modelSelect.value === "_custom" ? customModelInput.value.trim() : modelSelect.value;
+    if (!model) { statusEl.textContent = "Enter a model ID"; return; }
+    const body = { provider: providerSelect.value, model };
     body.custom_instructions = customInstructionsEl.value.trim();
-    body.include_anime_styles = animeStylesCheckbox.checked;
     if (openrouterKeyInput.value.trim()) body.openrouter_api_key = openrouterKeyInput.value.trim();
     if (anthropicKeyInput.value.trim()) body.anthropic_api_key = anthropicKeyInput.value.trim();
     if (bedrockAccessInput.value.trim()) body.bedrock_access_key = bedrockAccessInput.value.trim();
@@ -1965,9 +1983,6 @@ function buildChatUI(el) {
       }
       if (customInstructionsEl?.value?.trim()) {
         body.custom_instructions = customInstructionsEl.value.trim();
-      }
-      if (STATE.includeAnimeStyles) {
-        body.include_anime_styles = true;
       }
 
       const res = await fetch("/claude-assistant/chat/stream", {

@@ -121,6 +121,9 @@ When helping with Stable Diffusion prompts:
 - Negative prompt essentials: worst quality, low quality, blurry, bad anatomy
 - Be specific about composition, lighting, style, and subject details
 - For Pony/Animagine models, include score tags: "score_9, score_8_up, score_7_up"
+- When users ask about art styles, suggest specific artist names as tags (e.g. "by greg rutkowski", "makoto shinkai", \
+"artgerm", "wlop"). Use Danbooru-style artist tags for anime models. You know many artists and their visual styles — \
+suggest ones that match the user's desired aesthetic.
 
 ## Vision
 When the user sends generated images, analyze them carefully. Comment on:
@@ -195,7 +198,7 @@ def get_installed_models():
         return {}
 
 
-def build_system_with_workflow(workflow, custom_instructions=None, memory=None, include_anime_styles=False):
+def build_system_with_workflow(workflow, custom_instructions=None, memory=None):
     """Append workflow JSON, installed models, custom instructions, and memory to the system prompt."""
     system = SYSTEM_PROMPT
     if custom_instructions:
@@ -220,66 +223,11 @@ def build_system_with_workflow(workflow, custom_instructions=None, memory=None, 
                 if len(files) > 50:
                     system += f" ... and {len(files) - 50} more"
 
-    # Add artist style tags if enabled
-    if include_anime_styles:
-        # SDXL styles with descriptions (most useful for matching style descriptions)
-        sdxl = load_sdxl_styles()
-        if sdxl:
-            system += "\n\n## Artist Style Tags (SDXL-recognized)\n"
-            system += "When the user asks about art styles, suggest artists from this list. "
-            system += "Format: artist name | style tags. Use the artist name as a tag in the positive prompt.\n"
-            lines = []
-            for s in sdxl:
-                if s.get("tags"):
-                    lines.append(f"{s['name']} | {s['tags']}")
-                else:
-                    lines.append(s["name"])
-            system += "\n".join(lines)
-
-        # Anime-specific styles (Danbooru top 500, names only)
-        anime = load_anime_styles(limit=500)
-        if anime:
-            names = ", ".join(s["name"] for s in anime)
-            system += "\n\n## Anime Artist Tags (Danbooru, top 500 by popularity)\n"
-            system += "Additional anime-specific artist tags. Use as-is in prompts.\n"
-            system += names
-
     return system
 
 
 def _memory_path():
     return Path(__file__).parent / "memory.md"
-
-
-_anime_styles_cache = None
-_sdxl_styles_cache = None
-
-def _load_json_cache(filename):
-    """Load a JSON file from the extension directory."""
-    path = Path(__file__).parent / filename
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return []
-
-def load_anime_styles(limit=None):
-    """Load anime artist style tags from anime_styles.json. Cached after first load."""
-    global _anime_styles_cache
-    if _anime_styles_cache is None:
-        _anime_styles_cache = _load_json_cache("anime_styles.json")
-    if limit:
-        return _anime_styles_cache[:limit]
-    return _anime_styles_cache
-
-def load_sdxl_styles():
-    """Load SDXL artist styles with descriptions from sdxl_styles.json. Cached after first load."""
-    global _sdxl_styles_cache
-    if _sdxl_styles_cache is None:
-        _sdxl_styles_cache = _load_json_cache("sdxl_styles.json")
-    return _sdxl_styles_cache
 
 
 def load_memory():
@@ -489,9 +437,8 @@ async def chat_stream(request):
     workflow = data.get("workflow")
     model = data.get("model") or get_model()
     custom_instructions = data.get("custom_instructions") or config.get("custom_instructions", "")
-    include_anime_styles = data.get("include_anime_styles") if "include_anime_styles" in data else config.get("include_anime_styles", False)
     memory = load_memory()
-    system = build_system_with_workflow(workflow, custom_instructions=custom_instructions, memory=memory, include_anime_styles=include_anime_styles)
+    system = build_system_with_workflow(workflow, custom_instructions=custom_instructions, memory=memory)
 
     response = web.StreamResponse(
         status=200,
@@ -551,7 +498,6 @@ async def get_config(request):
         "bedrock_region": bedrock_region,
         "model": config.get("model", "anthropic/claude-sonnet-4.5"),
         "custom_instructions": config.get("custom_instructions", ""),
-        "include_anime_styles": config.get("include_anime_styles", False),
     })
 
 
@@ -563,7 +509,7 @@ async def set_config(request):
 
     for key in ("provider", "model", "anthropic_api_key", "openrouter_api_key",
                  "bedrock_access_key", "bedrock_secret_key", "bedrock_region",
-                 "custom_instructions", "include_anime_styles"):
+                 "custom_instructions"):
         if key in data:
             config[key] = data[key]
 
