@@ -13,7 +13,22 @@ __init__.py          # Entry point: WEB_DIRECTORY = "./web", imports server.py
 server.py            # aiohttp API routes on PromptServer, streaming to 3 providers
 web/extension.js     # Single-file frontend: sidebar UI, CSS inlined, all features
 requirements.txt     # anthropic[bedrock]>=0.40.0
+logo.svg             # Sidebar tab icon
+memory.md            # Persistent AI memory (written at runtime via update_memory action)
 ```
+
+## Development
+
+No build step, linter, or test suite. The extension is vanilla JS + Python with no transpilation.
+
+**Install dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+**Test changes:** This extension runs inside ComfyUI. Install to `ComfyUI/custom_nodes/`, restart ComfyUI (or just refresh browser for JS-only changes — ComfyUI auto-loads JS from `WEB_DIRECTORY`). Python changes (server.py) require a ComfyUI restart.
+
+**Frontend debugging:** Browser DevTools console — the extension logs errors there. All CSS is inlined in extension.js (no separate stylesheet).
 
 ## Architecture
 
@@ -28,6 +43,7 @@ Three streaming backends, all normalize to SSE format `data: {"type": "text_delt
 | Bedrock | `stream_bedrock()` | `AsyncAnthropicBedrock` SDK | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + region |
 
 Key server functions:
+- `SYSTEM_PROMPT` — large inline string defining ComfyBot's persona, action format, node slot reference, and prompt engineering guidance
 - `convert_messages_for_anthropic()` / `convert_messages_for_openrouter()` — image content conversion
 - `build_system_with_workflow()` — combines SYSTEM_PROMPT + custom instructions + workflow JSON + installed models + AI memory
 - `get_installed_models()` — reads ComfyUI `folder_paths` for checkpoints, LoRAs, VAEs, etc.
@@ -35,7 +51,9 @@ Key server functions:
 
 ### Frontend (web/extension.js)
 
-Single file, CSS inlined at top. Key architectural patterns:
+Single file, CSS inlined at top. Model lists are hardcoded as `ANTHROPIC_MODELS`, `OPENROUTER_MODELS`, `BEDROCK_MODELS` constants. Conversation stored in `localStorage` under key `comfybot-conversation`.
+
+Key architectural patterns:
 
 - **Module-scoped STATE** — `const STATE = {...}` persists across sidebar tab switches (ComfyUI calls `render(el)` each time the tab is selected, destroying/rebuilding DOM). Holds conversationHistory, streaming state, actionStore, outputImageHistory, floatingPos, _graphSnapshots, _lastWorkflowHash.
 - **Module-scoped DOM** — `const DOM = {...}` updated on each `buildChatUI()` call so async streaming callbacks always write to the current DOM elements.
@@ -108,3 +126,11 @@ The `id` field in `add_node` is a temporary reference — `applyGraphActions()` 
 - `app.canvas.selected_nodes` — current selection
 - `api.addEventListener("execution_error"|"executed", ...)` — runtime events
 - `/view?filename=...&type=output` — fetch generated images
+
+## Important Conventions
+
+- **SSE normalization** — All three providers must emit the same `data: {"type": "text_delta", "text": "..."}` format. OpenRouter requires converting from OpenAI's delta format; Anthropic and Bedrock emit natively.
+- **Consecutive same-role merging** — The Anthropic API rejects consecutive messages with the same role. The frontend merges them before sending (particularly relevant for system feedback messages appended as `role: "user"`).
+- **No subdirectories in web/** — ComfyUI only auto-loads JS from the root of `WEB_DIRECTORY`. Don't create subdirs for JS modules.
+- **API keys in config** — Stored as plaintext in the config JSON file. The GET endpoint masks them (shows only last 4 chars). Never return full keys in API responses.
+- **Adding new models** — Update the corresponding `*_MODELS` array in `extension.js`. For new providers, also add a streaming function in `server.py` that normalizes output to the same SSE format.

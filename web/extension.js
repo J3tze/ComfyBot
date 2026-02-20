@@ -413,6 +413,7 @@ const STYLES = `
   display: flex; align-items: center; justify-content: center;
   font-size: 18px; opacity: 0.3;
 }
+
 `;
 
 const STORAGE_KEY = "comfybot-conversation";
@@ -467,6 +468,7 @@ const STATE = {
   _graphSnapshots: {},      // actionId → serialized graph (session-only, not persisted)
   _lastWorkflowHash: null,  // hash of workflow when last sent
   _chatGeneration: 0,       // incremented on clear — stale responses check this
+  includeAnimeStyles: false,
 };
 
 // Module-scoped DOM references (updated on each buildChatUI call)
@@ -980,6 +982,12 @@ function buildChatUI(el) {
       <textarea class="claude-memory-textarea" placeholder="The AI can write notes here to remember across sessions..." rows="3" readonly></textarea>
       <span class="claude-settings-hint">Managed by the AI — ask it to remember something</span>
     </div>
+    <div class="claude-settings-row">
+      <label class="claude-workflow-toggle claude-anime-styles-toggle">
+        <input type="checkbox" class="claude-anime-styles-checkbox"> Include anime artist style tags for AI suggestions
+      </label>
+      <span class="claude-settings-hint">Adds ~2,000 SDXL artist styles with descriptions + 500 anime tags (~20k tokens)</span>
+    </div>
     <div class="claude-settings-actions">
       <button class="claude-btn claude-btn-primary claude-save-btn">Save</button>
       <span class="claude-settings-status"></span>
@@ -1074,6 +1082,7 @@ function buildChatUI(el) {
   const batchSelect = quickActions.querySelector(".claude-batch-select");
   const customInstructionsEl = settings.querySelector(".claude-custom-instructions");
   const memoryEl = settings.querySelector(".claude-memory-textarea");
+  const animeStylesCheckbox = settings.querySelector(".claude-anime-styles-checkbox");
   const tokenInfoEl = inputArea.querySelector(".claude-token-info");
   const workflowIndicator = inputArea.querySelector(".claude-workflow-indicator");
 
@@ -1126,6 +1135,10 @@ function buildChatUI(el) {
       if (cfg.bedrock_region) bedrockRegionInput.value = cfg.bedrock_region;
       if (cfg.model) updateModelList(STATE.currentProvider, cfg.model);
       if (cfg.custom_instructions) customInstructionsEl.value = cfg.custom_instructions;
+      if (cfg.include_anime_styles) {
+        animeStylesCheckbox.checked = true;
+        STATE.includeAnimeStyles = true;
+      }
       // Load AI memory
       try {
         const memRes = await fetch("/claude-assistant/memory");
@@ -1190,6 +1203,10 @@ function buildChatUI(el) {
     STATE.settingsOpen = !STATE.settingsOpen;
     settings.classList.toggle("open", STATE.settingsOpen);
     header.querySelector('[data-action="settings"]').classList.toggle("active", STATE.settingsOpen);
+  });
+
+  animeStylesCheckbox.addEventListener("change", () => {
+    STATE.includeAnimeStyles = animeStylesCheckbox.checked;
   });
 
   header.querySelector('[data-action="clear"]').addEventListener("click", () => {
@@ -1315,6 +1332,7 @@ function buildChatUI(el) {
   saveBtn.addEventListener("click", async () => {
     const body = { provider: providerSelect.value, model: modelSelect.value };
     body.custom_instructions = customInstructionsEl.value.trim();
+    body.include_anime_styles = animeStylesCheckbox.checked;
     if (openrouterKeyInput.value.trim()) body.openrouter_api_key = openrouterKeyInput.value.trim();
     if (anthropicKeyInput.value.trim()) body.anthropic_api_key = anthropicKeyInput.value.trim();
     if (bedrockAccessInput.value.trim()) body.bedrock_access_key = bedrockAccessInput.value.trim();
@@ -1828,6 +1846,9 @@ function buildChatUI(el) {
       }
       if (customInstructionsEl?.value?.trim()) {
         body.custom_instructions = customInstructionsEl.value.trim();
+      }
+      if (STATE.includeAnimeStyles) {
+        body.include_anime_styles = true;
       }
 
       const res = await fetch("/claude-assistant/chat/stream", {
