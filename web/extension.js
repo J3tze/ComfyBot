@@ -710,41 +710,52 @@ function executeGraphAction(action) {
       case "set_widget": {
         const node = graph.getNodeById(action.node_id);
         if (!node) return { ok: false, msg: `Node #${action.node_id} not found` };
-        // Common widget name aliases (AI often uses short names)
-        const WIDGET_ALIASES = {
-          lora: "lora_name", strength: "strength_model",
-          ckpt: "ckpt_name", vae: "vae_name",
-          control_net: "control_net_name", upscale_model: "model_name",
-        };
-        let widgetName = action.name;
-        if (!node.widgets?.find((w) => w.name === widgetName) && WIDGET_ALIASES[widgetName]) {
-          widgetName = WIDGET_ALIASES[widgetName];
+        const widgets = node.widgets || [];
+        const availableNames = widgets.map(w => w.name);
+
+        // Resolve widget name: exact → case-insensitive → substring → alias
+        function resolveWidget(name) {
+          // 1. Exact match
+          let w = widgets.find(w => w.name === name);
+          if (w) return w;
+          // 2. Case-insensitive match
+          const lower = name.toLowerCase();
+          w = widgets.find(w => w.name.toLowerCase() === lower);
+          if (w) return w;
+          // 3. Substring match (query in widget name, prefer shortest match)
+          const subs = widgets.filter(w => w.name.toLowerCase().includes(lower));
+          if (subs.length === 1) return subs[0];
+          if (subs.length > 1) return subs.sort((a, b) => a.name.length - b.name.length)[0];
+          // 4. Reverse substring (widget name in query)
+          const rsubs = widgets.filter(w => lower.includes(w.name.toLowerCase()));
+          if (rsubs.length === 1) return rsubs[0];
+          if (rsubs.length > 1) return rsubs.sort((a, b) => b.name.length - a.name.length)[0];
+          return null;
         }
-        // Try widget first
-        const w = node.widgets?.find((w) => w.name === widgetName);
+
+        const w = resolveWidget(action.name);
         if (w) {
           w.value = action.value;
-          // Trigger widget callback so custom nodes react to the change
           if (typeof w.callback === "function") {
             try { w.callback(w.value, app.canvas, node, null, {}); } catch {}
           }
-          // Also trigger node-level change handler
           if (typeof node.onWidgetChanged === "function") {
-            try { node.onWidgetChanged(widgetName, action.value, w); } catch {}
+            try { node.onWidgetChanged(w.name, action.value, w); } catch {}
           }
           node.setDirtyCanvas?.(true, true);
-          return { ok: true, msg: `Set ${widgetName}=${JSON.stringify(action.value)} on #${action.node_id}` };
+          return { ok: true, msg: `Set ${w.name}=${JSON.stringify(action.value)} on #${action.node_id}` };
         }
         // Fallback: set node property (for custom nodes that store data in properties)
-        if (node.properties && widgetName in node.properties) {
-          node.properties[widgetName] = action.value;
+        const propName = Object.keys(node.properties || {}).find(k => k.toLowerCase() === action.name.toLowerCase());
+        if (propName) {
+          node.properties[propName] = action.value;
           if (typeof node.onPropertyChanged === "function") {
-            try { node.onPropertyChanged(widgetName, action.value); } catch {}
+            try { node.onPropertyChanged(propName, action.value); } catch {}
           }
           node.setDirtyCanvas?.(true, true);
-          return { ok: true, msg: `Set property ${widgetName} on #${action.node_id}` };
+          return { ok: true, msg: `Set property ${propName} on #${action.node_id}` };
         }
-        return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id}` };
+        return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id} (available: ${availableNames.join(", ") || "none"})` };
       }
       case "update_memory": {
         // Handled by the action card click handler (async fetch)
