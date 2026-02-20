@@ -531,7 +531,6 @@ const STATE = {
   iterationMode: false,
   iterationGoal: "",
   iterationCount: 0,
-  iterationMax: 5,
   iterationSnapshot: null,       // graph state before iteration 1
   _iterationAwaitingResult: false,
   _iterationDebounce: null,
@@ -1968,7 +1967,7 @@ function buildChatUI(el) {
       STATE.iterationSnapshot = app.graph.serialize();
       STATE.iterationCount = 1;
       showIterationBanner();
-      text = `[ITERATION MODE - Round 1/${STATE.iterationMax}]\n` +
+      text = `[ITERATION MODE - Round 1]\n` +
         `Goal: "${STATE.iterationGoal}"\n\n` +
         `Analyze the current workflow and propose changes to achieve this goal.\n` +
         `If the goal is already met, say "GOAL_MET" and explain why.\n` +
@@ -2193,7 +2192,7 @@ function buildChatUI(el) {
                     STATE._iterationAwaitingResult = true;
                     // Feedback: actions applied, waiting for execution
                     const actionSummary = applied.graphActions.map(a => describeAction(a)).join(", ");
-                    const fb = `[Iteration ${STATE.iterationCount}/${STATE.iterationMax}: Applied ${applied.succeeded} changes, queued prompt. Actions: ${actionSummary}]`;
+                    const fb = `[Iteration ${STATE.iterationCount}: Applied ${applied.succeeded} changes, queued prompt. Actions: ${actionSummary}]`;
                     STATE.conversationHistory.push({ role: "user", content: fb, _isSystemFeedback: true });
                     addMessageToDOM("info", fb);
                     saveConversation();
@@ -2234,7 +2233,7 @@ function buildChatUI(el) {
     const banner = document.createElement("div");
     banner.className = "claude-iteration-banner";
     banner.innerHTML = `
-      <span class="claude-iteration-banner-count">Iteration ${STATE.iterationCount}/${STATE.iterationMax}</span>
+      <span class="claude-iteration-banner-count">Iteration ${STATE.iterationCount}</span>
       <span class="claude-iteration-banner-goal">${escapeHtml(STATE.iterationGoal)}</span>
       <button class="claude-revert-btn" data-action="revert-all">Revert All</button>
     `;
@@ -2250,7 +2249,7 @@ function buildChatUI(el) {
 
   function updateIterationBanner() {
     const countEl = root.querySelector(".claude-iteration-banner-count");
-    if (countEl) countEl.textContent = `Iteration ${STATE.iterationCount}/${STATE.iterationMax}`;
+    if (countEl) countEl.textContent = `Iteration ${STATE.iterationCount}`;
   }
 
   async function onIterationExecutionComplete() {
@@ -2278,7 +2277,7 @@ function buildChatUI(el) {
     const bar = document.createElement("div");
     bar.className = "claude-iteration-bar";
     bar.innerHTML = `
-      <span class="claude-iteration-bar-count">${STATE.iterationCount}/${STATE.iterationMax}</span>
+      <span class="claude-iteration-bar-count">${STATE.iterationCount}</span>
       <button class="iter-continue">Continue</button>
       <input type="text" class="iter-feedback" placeholder="Add feedback (optional)...">
       <button class="iter-stop">Stop</button>
@@ -2309,13 +2308,9 @@ function buildChatUI(el) {
 
   function continueIteration(feedback, outputImages) {
     STATE.iterationCount++;
-    if (STATE.iterationCount > STATE.iterationMax) {
-      exitIterationMode(`Max iterations (${STATE.iterationMax}) reached`);
-      return;
-    }
     updateIterationBanner();
 
-    const iterMsg = `[ITERATION MODE - Round ${STATE.iterationCount}/${STATE.iterationMax}]\n` +
+    const iterMsg = `[ITERATION MODE - Round ${STATE.iterationCount}]\n` +
       `Goal: "${STATE.iterationGoal}"\n` +
       (feedback ? `User feedback: "${feedback}"\n` : "") +
       (STATE._iterationLastDiff ? `Changes applied last round: ${STATE._iterationLastDiff}\n` : "") +
