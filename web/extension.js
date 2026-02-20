@@ -1676,8 +1676,11 @@ function buildChatUI(el) {
     emptyState.remove();
     for (let i = 0; i < STATE.conversationHistory.length; i++) {
       const entry = STATE.conversationHistory[i];
+      // Skip entries with null display text (iteration continuation prompts)
+      const displayContent = "_displayText" in entry ? entry._displayText : entry.content;
+      if (displayContent === null) continue;
       const displayRole = entry._isSystemFeedback ? "info" : entry.role;
-      const msgEl = addMessageToDOM(displayRole, entry.content, entry.images);
+      const msgEl = addMessageToDOM(displayRole, displayContent, entry.images);
       msgEl.dataset.historyIdx = String(i);
       // Restore applied action states
       if (entry.role === "assistant") appendRetryButton(msgEl);
@@ -1988,6 +1991,7 @@ function buildChatUI(el) {
 
     if (displayText) addMessageToDOM("user", displayText, attachedImages);
     const historyEntry = { role: "user", content: text, _isSystemFeedback: isIterationContinue };
+    if (displayText !== text) historyEntry._displayText = displayText;
     if (attachedImages) historyEntry.images = attachedImages;
     STATE.conversationHistory.push(historyEntry);
     saveConversation();
