@@ -1911,10 +1911,10 @@ function buildChatUI(el) {
       showIterationBanner();
       text = `[ITERATION MODE - Round 1/${STATE.iterationMax}]\n` +
         `Goal: "${STATE.iterationGoal}"\n\n` +
-        `Analyze the current workflow and propose set_widget changes to achieve this goal.\n` +
-        `Use ONLY set_widget actions (no add_node, remove_node, connect, or disconnect).\n` +
+        `Analyze the current workflow and propose changes to achieve this goal.\n` +
         `If the goal is already met, say "GOAL_MET" and explain why.\n` +
-        `Otherwise, output a comfyui-actions block with set_widget changes.`;
+        `Otherwise, output your changes in a \`\`\`comfyui-actions code block (this exact language tag is required for auto-apply). ` +
+        `Do NOT use \`\`\`json — it MUST be \`\`\`comfyui-actions. Do NOT add comments inside the JSON.`;
       displayText = STATE.iterationGoal; // show the goal the user typed
     }
     if (isIterationContinue) {
@@ -2074,36 +2074,68 @@ function buildChatUI(el) {
           if (STATE.iterationMode && fullResponse) {
             if (fullResponse.includes("GOAL_MET")) {
               exitIterationMode("Goal achieved!");
-            } else if (actionBlocks && actionBlocks.length > 0) {
-              // Find the first action card and auto-apply it
-              const firstCard = DOM.streamingMsg.querySelector(".claude-action-card");
-              if (firstCard) {
-                const actionId = firstCard.dataset.actionId;
-                const applied = await applyActionCardActions(actionId);
-                if (applied) {
-                  // Mark card as applied visually
-                  const applyBtn = firstCard.querySelector(".claude-apply-btn");
-                  if (applyBtn) { applyBtn.disabled = true; applyBtn.classList.add("applied"); applyBtn.textContent = "Auto-applied"; }
-                  const resultEl = firstCard.querySelector(".claude-apply-result");
-                  if (resultEl) {
-                    let txt = applied.results.map(r => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
-                    if (applied.diffSummary) txt += `\nDiff: ${applied.diffSummary}`;
-                    resultEl.textContent = txt;
-                  }
-                  STATE._iterationLastDiff = applied.diffSummary || "";
-                  // Auto-queue prompt
-                  try { app.queuePrompt(0); } catch (qe) { console.warn("ComfyBot: Failed to queue prompt", qe); }
-                  STATE._iterationAwaitingResult = true;
-                  // Feedback: actions applied, waiting for execution
-                  const actionSummary = applied.graphActions.map(a => describeAction(a)).join(", ");
-                  const fb = `[Iteration ${STATE.iterationCount}/${STATE.iterationMax}: Applied ${applied.succeeded} changes, queued prompt. Actions: ${actionSummary}]`;
-                  STATE.conversationHistory.push({ role: "user", content: fb, _isSystemFeedback: true });
-                  addMessageToDOM("info", fb);
-                  saveConversation();
+            } else {
+              // Try to get actions: first from parsed comfyui-actions blocks, then fallback to json blocks
+              let iterActions = actionBlocks && actionBlocks.length > 0 ? actionBlocks[0] : null;
+              if (!iterActions) {
+                // Fallback: extract action arrays from ```json blocks or bare JSON
+                const jsonMatch = fullResponse.match(/```(?:json)?\s*\n?\s*(\[[\s\S]*?\])\s*\n?```/);
+                if (jsonMatch) {
+                  try {
+                    // Strip JS-style comments before parsing
+                    const cleaned = jsonMatch[1].replace(/\/\/[^\n]*/g, "").replace(/,\s*([}\]])/g, "$1");
+                    const parsed = JSON.parse(cleaned);
+                    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].action) {
+                      iterActions = parsed;
+                      // Inject into actionStore so applyActionCardActions can find it
+                      const fallbackId = `action-iter-${Date.now()}`;
+                      STATE.actionStore[fallbackId] = iterActions;
+                      // Re-render the message with a proper action card
+                      const patched = fullResponse.replace(jsonMatch[0], "```comfyui-actions\n" + JSON.stringify(iterActions, null, 2) + "\n```");
+                      const rerendered = renderMarkdown(patched, { actionStore: STATE.actionStore });
+                      DOM.streamingMsg.innerHTML = rerendered.html;
+                      // Update action store from re-rendered cards
+                      const cards = DOM.streamingMsg.querySelectorAll(".claude-action-card");
+                      cards.forEach((card, ci) => {
+                        if (rerendered.actionBlocks[ci]) STATE.actionStore[card.dataset.actionId] = rerendered.actionBlocks[ci];
+                      });
+                      STATE.conversationHistory[STATE.conversationHistory.length - 1].content = patched;
+                    }
+                  } catch { /* not valid actions */ }
                 }
               }
-            } else {
-              exitIterationMode("No actions proposed by AI");
+
+              if (iterActions) {
+                // Find the first action card and auto-apply it
+                const firstCard = DOM.streamingMsg.querySelector(".claude-action-card");
+                if (firstCard) {
+                  const actionId = firstCard.dataset.actionId;
+                  const applied = await applyActionCardActions(actionId);
+                  if (applied) {
+                    // Mark card as applied visually
+                    const applyBtn = firstCard.querySelector(".claude-apply-btn");
+                    if (applyBtn) { applyBtn.disabled = true; applyBtn.classList.add("applied"); applyBtn.textContent = "Auto-applied"; }
+                    const resultEl = firstCard.querySelector(".claude-apply-result");
+                    if (resultEl) {
+                      let txt = applied.results.map(r => `${r.ok ? "\u2713" : "\u2717"} ${r.msg}`).join("\n");
+                      if (applied.diffSummary) txt += `\nDiff: ${applied.diffSummary}`;
+                      resultEl.textContent = txt;
+                    }
+                    STATE._iterationLastDiff = applied.diffSummary || "";
+                    // Auto-queue prompt
+                    try { app.queuePrompt(0); } catch (qe) { console.warn("ComfyBot: Failed to queue prompt", qe); }
+                    STATE._iterationAwaitingResult = true;
+                    // Feedback: actions applied, waiting for execution
+                    const actionSummary = applied.graphActions.map(a => describeAction(a)).join(", ");
+                    const fb = `[Iteration ${STATE.iterationCount}/${STATE.iterationMax}: Applied ${applied.succeeded} changes, queued prompt. Actions: ${actionSummary}]`;
+                    STATE.conversationHistory.push({ role: "user", content: fb, _isSystemFeedback: true });
+                    addMessageToDOM("info", fb);
+                    saveConversation();
+                  }
+                }
+              } else {
+                exitIterationMode("No actions proposed by AI");
+              }
             }
           }
         }
@@ -2222,7 +2254,8 @@ function buildChatUI(el) {
       (feedback ? `User feedback: "${feedback}"\n` : "") +
       (STATE._iterationLastDiff ? `Changes applied last round: ${STATE._iterationLastDiff}\n` : "") +
       `\nAnalyze the output image. If the goal is met, say "GOAL_MET" and explain why.\n` +
-      `Otherwise, propose set_widget changes in a comfyui-actions block.`;
+      `Otherwise, propose changes in a \`\`\`comfyui-actions code block (this exact language tag is required for auto-apply). ` +
+      `Do NOT use \`\`\`json — it MUST be \`\`\`comfyui-actions. Do NOT add comments inside the JSON.`;
 
     sendMessageText(iterMsg, outputImages);
   }
