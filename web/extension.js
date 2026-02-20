@@ -1970,6 +1970,7 @@ function buildChatUI(el) {
       text = `[ITERATION MODE - Round 1]\n` +
         `Goal: "${STATE.iterationGoal}"\n\n` +
         `Analyze the current workflow and propose changes to achieve this goal.\n` +
+        `You may use any actions: add_node, remove_node, connect, disconnect, set_widget.\n` +
         `If the goal is already met, say "GOAL_MET" and explain why.\n` +
         `Otherwise, output your changes in a \`\`\`comfyui-actions code block (this exact language tag is required for auto-apply). ` +
         `Do NOT use \`\`\`json — it MUST be \`\`\`comfyui-actions. Do NOT add comments inside the JSON.`;
@@ -2314,7 +2315,8 @@ function buildChatUI(el) {
       `Goal: "${STATE.iterationGoal}"\n` +
       (feedback ? `User feedback: "${feedback}"\n` : "") +
       (STATE._iterationLastDiff ? `Changes applied last round: ${STATE._iterationLastDiff}\n` : "") +
-      `\nAnalyze the output image. If the goal is met, say "GOAL_MET" and explain why.\n` +
+      `\nAnalyze the output image. You may use any actions: add_node, remove_node, connect, disconnect, set_widget.\n` +
+      `If the goal is met, say "GOAL_MET" and explain why.\n` +
       `Otherwise, propose changes in a \`\`\`comfyui-actions code block (this exact language tag is required for auto-apply). ` +
       `Do NOT use \`\`\`json — it MUST be \`\`\`comfyui-actions. Do NOT add comments inside the JSON.`;
 
