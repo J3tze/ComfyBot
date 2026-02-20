@@ -710,8 +710,18 @@ function executeGraphAction(action) {
       case "set_widget": {
         const node = graph.getNodeById(action.node_id);
         if (!node) return { ok: false, msg: `Node #${action.node_id} not found` };
+        // Common widget name aliases (AI often uses short names)
+        const WIDGET_ALIASES = {
+          lora: "lora_name", strength: "strength_model",
+          ckpt: "ckpt_name", vae: "vae_name",
+          control_net: "control_net_name", upscale_model: "model_name",
+        };
+        let widgetName = action.name;
+        if (!node.widgets?.find((w) => w.name === widgetName) && WIDGET_ALIASES[widgetName]) {
+          widgetName = WIDGET_ALIASES[widgetName];
+        }
         // Try widget first
-        const w = node.widgets?.find((w) => w.name === action.name);
+        const w = node.widgets?.find((w) => w.name === widgetName);
         if (w) {
           w.value = action.value;
           // Trigger widget callback so custom nodes react to the change
@@ -720,19 +730,19 @@ function executeGraphAction(action) {
           }
           // Also trigger node-level change handler
           if (typeof node.onWidgetChanged === "function") {
-            try { node.onWidgetChanged(action.name, action.value, w); } catch {}
+            try { node.onWidgetChanged(widgetName, action.value, w); } catch {}
           }
           node.setDirtyCanvas?.(true, true);
-          return { ok: true, msg: `Set ${action.name}=${JSON.stringify(action.value)} on #${action.node_id}` };
+          return { ok: true, msg: `Set ${widgetName}=${JSON.stringify(action.value)} on #${action.node_id}` };
         }
         // Fallback: set node property (for custom nodes that store data in properties)
-        if (node.properties && action.name in node.properties) {
-          node.properties[action.name] = action.value;
+        if (node.properties && widgetName in node.properties) {
+          node.properties[widgetName] = action.value;
           if (typeof node.onPropertyChanged === "function") {
-            try { node.onPropertyChanged(action.name, action.value); } catch {}
+            try { node.onPropertyChanged(widgetName, action.value); } catch {}
           }
           node.setDirtyCanvas?.(true, true);
-          return { ok: true, msg: `Set property ${action.name} on #${action.node_id}` };
+          return { ok: true, msg: `Set property ${widgetName} on #${action.node_id}` };
         }
         return { ok: false, msg: `Widget "${action.name}" not found on #${action.node_id}` };
       }
@@ -2029,8 +2039,15 @@ function buildChatUI(el) {
               fullResponse += data.text;
               STATE.streamingContent = fullResponse;
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
-                const { html } = renderMarkdown(fullResponse);
-                DOM.streamingMsg.innerHTML = html;
+                // During iteration mode, suppress raw code block rendering — just show text before the block
+                if (STATE.iterationMode && fullResponse.includes("```")) {
+                  const beforeBlock = fullResponse.split("```")[0];
+                  const { html } = renderMarkdown(beforeBlock + "\n\n*Applying changes...*");
+                  DOM.streamingMsg.innerHTML = html;
+                } else {
+                  const { html } = renderMarkdown(fullResponse);
+                  DOM.streamingMsg.innerHTML = html;
+                }
                 scrollToBottom();
               }
             } else if (data.type === "error") {
