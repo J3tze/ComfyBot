@@ -2088,10 +2088,13 @@ function buildChatUI(el) {
               fullResponse += data.text;
               STATE.streamingContent = fullResponse;
               if (DOM.streamingMsg && DOM.streamingMsg.isConnected) {
-                // During iteration mode, suppress raw code block rendering — just show text before the block
-                if (STATE.iterationMode && fullResponse.includes("```")) {
-                  const beforeBlock = fullResponse.split("```")[0];
-                  const { html } = renderMarkdown(beforeBlock + "\n\n*Applying changes...*");
+                // If there's an unclosed code block (streaming mid-block), render only text before it
+                const backtickCount = (fullResponse.match(/```/g) || []).length;
+                if (backtickCount % 2 === 1) {
+                  // Odd = unclosed block — show text before the opening ``` plus a placeholder
+                  const beforeBlock = fullResponse.substring(0, fullResponse.lastIndexOf("```"));
+                  const label = STATE.iterationMode ? "*Applying changes...*" : "*Generating actions...*";
+                  const { html } = renderMarkdown(beforeBlock + "\n\n" + label);
                   DOM.streamingMsg.innerHTML = html;
                 } else {
                   const { html } = renderMarkdown(fullResponse);
