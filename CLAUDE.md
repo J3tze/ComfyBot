@@ -4,19 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ComfyBot — AI-powered sidebar extension for ComfyUI. Chat with AI, manipulate graphs, analyze images, diagnose errors, engineer prompts. Includes conversation persistence, undo/revert, drag & drop images, AI memory, custom instructions, and more. No custom nodes, sidebar-only (`NODE_CLASS_MAPPINGS = {}`).
+ComfyBot — AI-powered sidebar extension for ComfyUI. Chat with AI, manipulate graphs, analyze images, diagnose errors, engineer prompts. Includes conversation persistence, undo/revert, drag & drop images, AI memory, custom instructions, iteration mode, and more. No custom nodes, sidebar-only (`NODE_CLASS_MAPPINGS = {}`).
 
 ## Project Structure
 
 ```
 __init__.py          # Entry point: WEB_DIRECTORY = "./web", imports server.py
 server.py            # aiohttp API routes on PromptServer, streaming to 3 providers
-web/extension.js     # Single-file frontend (~2300 lines): sidebar UI, CSS inlined, all features
+web/extension.js     # Single-file frontend (~2430 lines): sidebar UI, CSS inlined, all features
 requirements.txt     # anthropic[bedrock]>=0.40.0
 logo.svg             # Sidebar tab icon (also inlined in extension.js for sidebar tab)
 memory.md            # Persistent AI memory (written at runtime via update_memory action)
-anime_styles.json    # Danbooru anime artist tags (legacy data file, not loaded)
-sdxl_styles.json     # SDXL artist style tags (legacy data file, not loaded)
 ```
 
 ## Development
@@ -53,21 +51,21 @@ Key server functions:
 
 ### Frontend (web/extension.js)
 
-Single file (~2300 lines), CSS inlined at top. Organized into labeled sections with `/* ═══ */` delimiters:
+Single file (~2430 lines), CSS inlined at top. Organized into labeled sections with `/* ═══ */` delimiters:
 
 | Section | Approx. Lines | Contents |
 |---------|--------------|----------|
-| Logo SVG | 5–13 | `COMFYBOT_LOGO` inline SVG string for sidebar icon |
-| CSS | 15–470 | All styles in `STYLES` template literal |
-| Model Lists | 472–505 | `ANTHROPIC_MODELS`, `OPENROUTER_MODELS`, `BEDROCK_MODELS` arrays + `_custom` option |
-| Persistent State | 507–555 | `STATE` and `DOM` module-scoped objects |
-| Conversation Persistence | 559–640 | `saveConversation()`, `loadConversation()`, `estimateTokens()`, `simpleHash()`, `computeWorkflowDiff()` |
-| Graph Actions | 642–845 | `executeGraphAction()`, `applyGraphActions()`, `applyActionCardActions()` |
-| Markdown Rendering | 847–910 | `renderMarkdown()` with code block + action card parsing |
-| Image Handling | 912–960 | `fetchImageAsBase64()`, `updateImagePreview()` |
-| Global Listeners | 962–1035 | `registerGlobalListeners()` — error capture, execution events, node tracking interval |
-| UI Building | 1037–2290 | `buildChatUI(el)` — the main function that builds all DOM, handles streaming, settings, quick actions, iteration mode |
-| Extension Registration | 2292–2315 | `app.registerExtension()` + `registerSidebarTab()` with custom logo CSS |
+| Logo SVG | 4–7 | `COMFYBOT_LOGO` inline SVG string for sidebar icon |
+| CSS | 10–469 | All styles in `STYLES` template literal |
+| Model Lists | 473–507 | `ANTHROPIC_MODELS`, `OPENROUTER_MODELS`, `BEDROCK_MODELS` arrays + `_custom` option |
+| Persistent State | 509–558 | `STATE` and `DOM` module-scoped objects, iteration callbacks |
+| Conversation Persistence | 560–642 | `saveConversation()`, `loadConversation()`, `estimateTokens()`, `simpleHash()`, `computeWorkflowDiff()` |
+| Graph Actions | 644–906 | `executeGraphAction()`, `applyGraphActions()`, `applyActionCardActions()`, fuzzy widget resolution |
+| Markdown Rendering | 908–970 | `renderMarkdown()` with code block + action card parsing |
+| Image Handling | 972–1020 | `fetchImageAsBase64()`, `updateImagePreview()` |
+| Global Listeners | 1022–1090 | `registerGlobalListeners()` — error capture, execution events, node tracking interval |
+| UI Building | 1103–2399 | `buildChatUI(el)` — the main function that builds all DOM, handles streaming, settings, quick actions, iteration mode |
+| Extension Registration | 2401–2430 | `app.registerExtension()` + `registerSidebarTab()` with custom logo CSS |
 
 Model lists are hardcoded constants — update them when adding new models. Each provider list can include `{ id: "_custom", name: "Custom model ID..." }` to allow free-text model ID entry. Conversation stored in `localStorage` under key `comfybot-conversation`.
 
@@ -75,13 +73,14 @@ Key architectural patterns:
 
 - **Module-scoped STATE** — `const STATE = {...}` persists across sidebar tab switches (ComfyUI calls `render(el)` each time the tab is selected, destroying/rebuilding DOM). Holds conversationHistory, streaming state, actionStore, outputImageHistory, floatingPos, _graphSnapshots, _lastWorkflowHash.
 - **Module-scoped DOM** — `const DOM = {...}` updated on each `buildChatUI()` call so async streaming callbacks always write to the current DOM elements.
-- **Conversation persistence** — `saveConversation()` serializes history + actionStore to localStorage (base64 images stripped to save space; thumbnail_url preserved for display). `loadConversation()` restores on module init. Called after every history mutation.
+- **Conversation persistence** — `saveConversation()` serializes history + actionStore to localStorage (base64 images stripped to save space; thumbnail_url preserved for display). `loadConversation()` restores on module init. History entries may have `_displayText` to control what's shown to the user vs. what's sent to the AI (used by iteration mode).
 - **Node ID remapping** — `applyGraphActions()` maps AI-assigned temporary IDs to real LiteGraph IDs via `explicitMap` (from `add_node.id` field) and `positionMap` (sequential fallback).
 - **Widget callbacks** — `set_widget` triggers `w.callback()` and `node.onWidgetChanged()` so custom nodes react to value changes. Widget names are resolved via fuzzy matching (exact → case-insensitive → substring → reverse substring). Object-valued widgets (e.g. rgthree Power Lora Loader `lora_N` slots) are merged field-by-field instead of replaced — lora filenames update the `lora` field, numeric values update `strength`/`strengthTwo`.
 - **Graph undo** — Before applying actions, graph is snapshotted via `app.graph.serialize()`. "Revert" button restores via `app.graph.configure()`. Snapshots are session-only (not in localStorage).
 - **Workflow diff** — `computeWorkflowDiff()` compares before/after serialized graphs, reports added/removed nodes, widget changes, connection deltas.
 - **AI feedback** — After applying graph actions, a feedback message is appended to conversationHistory as `role: "user"` with `_isSystemFeedback: true`, rendered as centered info bubble. Consecutive same-role messages are merged in API payloads for provider compatibility.
-- **Iteration mode** — Automated apply-and-refine loop. User sets a goal and max rounds (`STATE.iterationMode`, `iterationGoal`, `iterationMax`). Each round: AI suggests changes → auto-apply → queue prompt → capture output → send diff + output back to AI. `_iterationAwaitingResult` gates the loop; `iterationSnapshot` stores the graph before iteration 1 for full revert.
+- **Iteration mode** — Automated apply-and-refine loop. User sets a goal, AI proposes changes (any action type: add_node, remove_node, connect, disconnect, set_widget) → auto-apply → queue prompt → capture output → send diff + output back to AI. No round limit — continues until user stops or AI says GOAL_MET. `iterationSnapshot` stores the graph before iteration 1 for full revert.
+- **Streaming display** — During streaming, unclosed code blocks (odd backtick count) are hidden and replaced with a placeholder ("*Generating actions...*" or "*Applying changes...*") to prevent raw JSON flash. Final render happens when the block closes.
 - **Drag & drop** — Images dropped on the message area are read via FileReader, pushed to `STATE.pendingImages`, max 4 images.
 - **Token estimate** — `estimateTokens()` uses ~4 chars/token heuristic. Displays conversation + workflow token count in input area.
 - **Context truncation** — Before sending, messages are truncated to ~80k estimated tokens (oldest dropped first). Ensures first message is `role: "user"` for Anthropic compatibility. Full history stays in localStorage for display.
@@ -155,3 +154,4 @@ The `id` field in `add_node` is a temporary reference — `applyGraphActions()` 
 - **Adding new models** — Update the corresponding `*_MODELS` array in `extension.js`. For new providers, also add a streaming function in `server.py` that normalizes output to the same SSE format.
 - **Iteration mode format** — The iteration prompt explicitly requires `` ```comfyui-actions `` code blocks (not `` ```json ``). A fallback parser catches `json` blocks with JS-style comments, strips them, and re-renders as proper action cards for auto-apply.
 - **Sidebar icon** — The logo SVG is inlined as `COMFYBOT_LOGO` constant and rendered via CSS `background-image` data URI on the `comfybot-logo` class. Not loaded from `logo.svg` at runtime.
+- **Display text separation** — History entries can have `_displayText` to show different content to the user than what's sent to the AI. Used by iteration mode to hide system prompts from chat display. `null` means skip rendering entirely.
